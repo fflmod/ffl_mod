@@ -1,0 +1,26 @@
+name: build
+
+on:
+  push:
+    branches: ['**']
+  workflow_dispatch:
+
+jobs:
+  manager:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v5
+        with:
+          gradle-version: '8.7'
+      - name: 管理アプリをビルド
+        working-directory: manager
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+      - uses: actions/upload-artifact@v6
+        with:
+          name: fflmod-manager-debug
+          path: manager/app/build/outputs/apk/debug/*.apk

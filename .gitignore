@@ -1,0 +1,22 @@
+# ゲームのファイルとビルドの出力は入れない
+*.apk
+*.apks
+*.obb
+*.dat
+*.so
+*.dex
+*.jar
+*.jks
+*.keystore
+*.p12
+out/
+patch/
+orig/
+# 手元だけの追加
+src/local.c
+__pycache__/
+# 管理アプリ
+manager/.gradle/
+manager/build/
+manager/app/build/
+manager/local.properties

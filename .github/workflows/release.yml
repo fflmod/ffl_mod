@@ -1,0 +1,95 @@
+name: release
+
+# 公開ソースから差分一式と管理アプリを作り、Release（タグ v版）を作る。
+# きっかけ：main に release-notes/版.md を新しく足して push したとき（その版の Release がまだ無ければ作る）。
+#           Actions の画面の「Run workflow」に版を入れても動く。v で始まるタグの push でも動く。
+# 名前に - が入る版はプレリリースにする。説明文は release-notes/版.md を使う。
+on:
+  push:
+    branches: [main]
+    paths: ['release-notes/**']
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版（例 1.0-pre1）'
+        required: true
+
+permissions:
+  contents: write
+
+env:
+  APKTOOL_URL: https://github.com/iBotPeaches/Apktool/releases/download/v2.10.0/apktool_2.10.0.jar
+  APKTOOL_SHA256: c0350abbab5314248dfe2ee0c907def4edd14f6faef1f5d372d3d4abd28f0431
+
+jobs:
+  release:
+    runs-on: ubuntu-24.04   # clang 18（手元と同じ .so になる版）に固定
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: 版を決める
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ -n "${{ github.event.inputs.version }}" ]; then
+            V="${{ github.event.inputs.version }}"
+          elif [ "$GITHUB_REF_TYPE" = tag ]; then
+            V="${GITHUB_REF_NAME#v}"
+          else
+            # この push で新しく足された release-notes/版.md（1つだけ）
+            V=$(git diff --name-only --diff-filter=A "$BEFORE" "$GITHUB_SHA" -- release-notes/ | sed -n 's|^release-notes/\(.*\)\.md$|\1|p' | tail -1)
+            if [ -z "$V" ]; then echo "新しい版の説明文はない。Release は作らない"; exit 0; fi
+          fi
+          test -f "release-notes/$V.md" || { echo "release-notes/$V.md がありません"; exit 1; }
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/v$V" >/dev/null 2>&1; then
+            echo "v$V の Release はもうある。作らない"; exit 0
+          fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+      - uses: actions/setup-java@v5
+        if: env.VERSION != ''
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: gradle/actions/setup-gradle@v5
+        if: env.VERSION != ''
+        with:
+          gradle-version: '8.7'
+      - name: 道具を用意
+        if: env.VERSION != ''
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q clang lld
+          clang --version | head -1
+          curl -fsSL -o apktool.jar "$APKTOOL_URL"
+          echo "$APKTOOL_SHA256  apktool.jar" | sha256sum -c -
+      - name: 差分一式を作る
+        if: env.VERSION != ''
+        run: |
+          APKTOOL="$PWD/apktool.jar" sh tools/build.sh - out
+          python3 tools/mkpatch.py out/work dist "$VERSION"
+          cat dist/files.json
+      - name: 管理アプリをビルド
+        if: env.VERSION != ''
+        working-directory: manager
+        env:
+          KEYSTORE_B64: ${{ secrets.FFLMOD_KEYSTORE_B64 }}
+          FFLMOD_KEYSTORE_PASSWORD: ${{ secrets.FFLMOD_KEYSTORE_PASSWORD }}
+        run: |
+          test -n "$KEYSTORE_B64" || { echo "Secret FFLMOD_KEYSTORE_B64 がありません"; exit 1; }
+          export FFLMOD_KEYSTORE="$RUNNER_TEMP/fflmod-manager.p12"
+          echo "$KEYSTORE_B64" | base64 -d > "$FFLMOD_KEYSTORE"
+          gradle :app:assembleRelease --no-daemon --stacktrace
+          rm -f "$FFLMOD_KEYSTORE"
+      - name: Release を作る
+        if: env.VERSION != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp manager/app/build/outputs/apk/release/app-release.apk dist/fflmod-manager.apk
+          PRE=""
+          case "$VERSION" in *-*) PRE="--prerelease"; TITLE="fflmod $VERSION（試験版）" ;; *) TITLE="fflmod $VERSION" ;; esac
+          gh release create "v$VERSION" --target "$GITHUB_SHA" $PRE --title "$TITLE" --notes-file "release-notes/$VERSION.md" \
+            dist/files.json dist/fflmod.dex dist/libfflmod.so dist/fflmod-manager.apk
