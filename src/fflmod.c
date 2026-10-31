@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1"
+#define FFLMOD_VERSION "1.1.1"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -3080,6 +3080,30 @@ static int ore_gen_fix(unsigned char *h, int cnt)
     return 1;
 }
 
+/* 1.1.1: モグのおまもり。エンカウントの前に共通イベント 0x0119 が var31 = 0..7 について GetReferenceChara(キャラ, 4, 4)
+   （アクセサリー）== 393 を見るが、0〜7 は主人公8人だけで、ゲストとスティクス（21）は見ていなかった。
+   2つの輪（4行目・12行目「var31 < 7 なら続ける」の 7）を 23 に（GetReferenceChara は 24 未満を受ける） */
+static void charm_fix(unsigned char *h, int cnt)
+{
+    if (h[0] != 1 || h[1] != 0x19 || cnt != 17) return;
+    static const unsigned char want[26] = { 0x3d,0,1,3,0,0,0,2,0,0,0,0x1f,4,0x0a,0,0,0,0,0,0,0,7,0,3,0,0 };
+    unsigned char *q = h + 0x41;
+    unsigned char *L[17];
+    for (int k = 0; k < cnt; k++) { L[k] = q + 1; q += 1 + q[0]; }
+    static int told;
+    for (int j = 0; j < 2; j++) {
+        unsigned char *x = L[j ? 12 : 4];
+        if (x[-1] != 26) goto bad;
+        for (int k = 0; k < 24; k++) if (x[k] != want[k] && !(k == 21 && x[k] == 23)) goto bad;
+        if (x[25] != (j ? 0x0f : 0x07)) goto bad;
+    }
+    L[4][21] = 23; L[12][21] = 23;
+    if (!told) { told = 1; LOGI("charm: common event 0x119 checks characters 0-23"); }
+    return;
+bad:
+    if (!told) { told = 1; LOGE("charm: common event 0x119 differs, kept"); }
+}
+
 static void hook_LoadEv(void *field, unsigned char *data, int off, void *hdrs, void *lines, void *counts, int n)
 {
     g_dashChara = 0; g_dashOrig = 0;               /* マップが変わったらダッシュの戻し待ちは捨てる */
@@ -3102,6 +3126,7 @@ static void hook_LoadEv(void *field, unsigned char *data, int off, void *hdrs, v
         circle_fix(h);
         dancer_circle(h);
         if (cnt) msgbox_fix(h, cnt);
+        charm_fix(h, cnt);
         if (be16(h + 0x2b) == 12 && h[7] == 1 && h[8] == 0) {
             if (first && dungeon_dest(dest) && first[1] == 0x3d && first[4] == 1 && be16(first + 7) == 5) {
                 h[6] = 1; h[7] = 0; h[8] = 1;                 /* 人として出し、話しかけで起動 */
