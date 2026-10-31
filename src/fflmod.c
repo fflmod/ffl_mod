@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1-pre2"
+#define FFLMOD_VERSION "1.1-pre3"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -4730,6 +4730,10 @@ static void hook_Cam(void *b, u8 *act)
    FieldClass::CallItemEvent(+0x1a − 1) を呼ぶ。アラームは +0x1a に魔法（1バイト）とも道具とも重ならない値を入れ、
    CallItemEvent で受ける。呼んだあと +0x20 bit5 なら bit4 で1個減らしてメニューを閉じるので、
    使えないときは bit5 をその場だけ外す（メニューに残り、減らない。次のフレームで戻す）
+   1.1-pre3: 使えない場所では、セーブポイント以外のテントと同じく暗く表示して選べなくする（DrawMenuItem・IsItemSelect）。
+   戦闘は、共通イベント 0x0106 を「選んだ行の番号を作業値0に入れて57行目から」動かす（57〜58行で先制・BGM などを決め、
+   59行で編成を取り、64行で戦闘の共通イベント 0x0101 を呼ぶ）。積んだあと MoveEvent(番号, true) で動かす
+   （CallItemEvent と同じ。pre2 は積むだけで動かさず、操作できなくなっていた）
    あわせて、終章のファブリカの武器屋（マテルの村の品をまとめた店）に、入れ忘れの夢の竪琴を足す */
 #include "alarm_tab.h"
 #define ALARM_ID       489
@@ -4746,7 +4750,7 @@ static void hook_Cam(void *b, u8 *act)
 #define F_WORK         0xe9ac         /* FieldClass: 台本の作業値 */
 #define SE_ALARM       74             /* 空中戦艦の火薬庫などの警報 */
 #define EV_ENCOUNT     0x0106         /* 共通イベント：ランダムエンカウント */
-#define EV_ENC_LINE    36             /* その中の抽選の始まり */
+#define EV_ENC_LINE    57             /* その中の、抽選のあと（作業値0＝選んだ行）から戦闘までの部分 */
 #define ALARM_EVENT       0x400       /* ITEM_DATA +0x1a（CallItemEvent には −1 で来る） */
 #define OFF_CIE_FUNC      0x3d1d94UL  /* FieldClass::CallItemEvent(int) */
 #define OFF_CIE_GOT       0x45fbe0UL
@@ -4760,7 +4764,11 @@ static void hook_Cam(void *b, u8 *act)
 #define OFF_REFPARTY      0x3ce5c8UL  /* FieldClass::GetReferenceParty(int, int, int) */
 #define OFF_RESERVESE     0x41a888UL  /* SoundCtrlClass::ReserveSE(int) */
 #define OFF_ADDITEM       0x3e3188UL  /* GameClass::AddItem(int, int) */
-#define OFF_STARTDLG      0x3edbd0UL  /* GameClass::StartDialog(int, const char*, const char*, int, int, bool) */
+#define OFF_MOVEEV        0x3d23d8UL  /* FieldClass::MoveEvent(int, bool) */
+#define OFF_ISSEL_FUNC    0x403c5cUL  /* MenuClass::IsItemSelect(int) */
+#define OFF_ISSEL_GOT     0x4604d8UL
+#define OFF_DMI_FUNC      0x410a58UL  /* MenuClass::DrawMenuItem(ITEM_DATA*, int, int, int, int) */
+#define OFF_DMI_GOT       0x460658UL
 typedef void (*CieFn)(void *field, int ev);
 typedef void (*ScriptFn)(void *field, u8 *sc);
 typedef int (*FieldIntFn)(void *field, int a);
@@ -4768,7 +4776,9 @@ typedef void (*PushEvFn)(void *field, int a, int b, int c, int d, int e);
 typedef int (*RefPartyFn)(void *field, int a, int b, int c);
 typedef void (*SeFn)(void *snd, int id);
 typedef void (*AddItemFn)(void *game, int id, int n);
-typedef void (*DlgFn)(void *game, int a, const char *t, const char *m, int b, int c, int d);   /* 最後は bool */
+typedef void (*MoveEvFn)(void *field, int idx, int now);
+typedef int (*IsSelFn)(void *menu, int pos);
+typedef void (*DmiFn)(void *menu, u8 *item, int a, int b, int c, int d);
 static CieFn g_origCie;
 static int g_alarmRestore;            /* 使えなかったときに外した bit5 を次のフレームで戻す */
 static ScriptFn g_origShop, g_origSEnc;
@@ -4777,7 +4787,8 @@ static unsigned g_alarmFrame;
 static const char k_alarmNameSJ[] = "\x83\x41\x83\x89\x81\x5b\x83\x80", k_alarmNameU8[] = "アラーム";
 static const char k_alarmHelpSJ[] = "\x83\x82\x83\x93\x83\x58\x83\x5e\x81\x5b\x82\xf0\x8c\xc4\x82\xd1\x8a\xf1\x82\xb9\x82\xe9",
                   k_alarmHelpU8[] = "モンスターを呼び寄せる";
-static const char k_nothingSJ[] = "\x89\xbd\x82\xe0\x8b\x4e\x82\xb1\x82\xe7\x82\xc8\x82\xa9\x82\xc1\x82\xbd", k_nothingU8[] = "何も起こらなかった";
+static IsSelFn g_origIsSel;
+static DmiFn g_origDmi;
 
 /* アイテム 489（名前のない空き、種類 0x19）をテントの写しから作る。名前・説明・値段 100・イベントなし・どこでも選べる印 */
 static void alarm_item(void *game)
@@ -4825,35 +4836,64 @@ static unsigned alarm_rand(void)
     return x;
 }
 
-/* 編成を選ぶ。選べないとき -1 */
-static int alarm_pick(void *game, void *field)
+/* 表の行を選ぶ（戻り値は行の番号、*form に編成）。使えない場所では -1。lg が0ならログを出さない */
+static int alarm_scan(void *game, void *field, int lg, int *form)
 {
     int n = RD(int, field, F_ENC_N), rate = RD(int, field, F_ENC_RATE);
     int *e = (int *)RDP(field, F_ENC_TAB);
-    if (n <= 0 || !e || rate <= 0) { LOGI("alarm: no encounter here (n %d rate %d)", n, rate); return -1; }
+    if (n <= 0 || !e || rate <= 0) { if (lg) LOGI("alarm: no encounter here (n %d rate %d)", n, rate); return -1; }
     int x = ((RefPartyFn)(g_base + OFF_REFPARTY))(field, 0, 1, 1), y = ((RefPartyFn)(g_base + OFF_REFPARTY))(field, 0, 1, 2);
     int ch = RD(int, game, G_CHAPTER);
     int here = 0;
-    int bestT = 9, bestW = 1 << 30, bestF = -1, ties = 0;     /* 今いる区画の対象 */
-    int lowW = 1 << 30, lowF = -1, lowTies = 0;                /* マップ全体で一番重みの低い編成 */
+    int bestT = 9, bestW = 1 << 30, bestI = -1, ties = 0;     /* 今いる区画の対象 */
+    int lowW = 1 << 30, lowI = -1, lowTies = 0;                /* マップ全体で一番重みの低い行 */
     for (int i = 0; i < n && i < 64; i++) {
         int *r = e + i * 6;
         int f = r[0], w = r[1];
         if (f <= 0 || w <= 0) continue;
         int in = x >= r[2] && x <= r[4] && y >= r[3] && y <= r[5];
+        if (in) here = 1;
+        if (!lg) { if (here) break; continue; }
         int t = alarm_tier(ch, f);
         LOGI("alarm:  [%d] form %d weight %d rect %d,%d-%d,%d%s tier %d", i, f, w, r[2], r[3], r[4], r[5], in ? " here" : "", t);
-        if (in) here = 1;
-        if (in && t && (t < bestT || (t == bestT && w < bestW))) { bestT = t; bestW = w; bestF = f; ties = 1; }
-        else if (in && t && t == bestT && w == bestW && alarm_rand() % (unsigned)++ties == 0) bestF = f;
-        if (w < lowW) { lowW = w; lowF = f; lowTies = 1; }
-        else if (w == lowW && alarm_rand() % (unsigned)++lowTies == 0) lowF = f;
+        if (in && t && (t < bestT || (t == bestT && w < bestW))) { bestT = t; bestW = w; bestI = i; ties = 1; }
+        else if (in && t && t == bestT && w == bestW && alarm_rand() % (unsigned)++ties == 0) bestI = i;
+        if (w < lowW) { lowW = w; lowI = i; lowTies = 1; }
+        else if (w == lowW && alarm_rand() % (unsigned)++lowTies == 0) lowI = i;
     }
-    if (!here) { LOGI("alarm: no entry covers %d,%d", x, y); return -1; }
-    int f = bestF >= 0 ? bestF : lowF;
-    LOGI("alarm: chapter %d map %d at %d,%d -> form %d (%s)", ch, g_curMap, x, y, f,
-         bestF >= 0 ? (bestT == 1 ? "tier 1" : "tier 2") : "lowest weight");
-    return f;
+    if (!here) { if (lg) LOGI("alarm: no entry covers %d,%d", x, y); return -1; }
+    if (!lg) return 0;
+    int i = bestI >= 0 ? bestI : lowI;
+    *form = e[i * 6];
+    LOGI("alarm: chapter %d map %d at %d,%d -> row %d form %d (%s)", ch, g_curMap, x, y, i, *form,
+         bestI >= 0 ? (bestT == 1 ? "tier 1" : "tier 2") : "lowest weight");
+    return i;
+}
+
+static int alarm_usable(void *game)
+{
+    int f;
+    return alarm_scan(game, (u8 *)game + G_FIELD, 0, &f) >= 0;
+}
+
+/* 使えない場所では、セーブポイント以外のテントと同じく選べない（押すとブザー） */
+static int hook_IsSel(void *menu, int pos)
+{
+    void *game = game_inst();
+    int *bag = game ? (int *)RDP(game, G_BAG) : 0;
+    if (bag && pos >= 0 && pos < 640 && bag[pos] == ALARM_ID && !alarm_usable(game)) return 0;
+    return g_origIsSel(menu, pos);
+}
+
+/* 使えない場所では暗く描く（+0x20 bit3＝セーブポイントだけ、を描く間だけ立てる） */
+static void hook_Dmi(void *menu, u8 *item, int a, int b, int c, int d)
+{
+    void *game = game_inst();
+    if (!game || item != (u8 *)game + G_ITEMDATA + ALARM_ID * ITEM_SZ || alarm_usable(game)) { g_origDmi(menu, item, a, b, c, d); return; }
+    unsigned short fl = RD(unsigned short, item, 0x20);
+    RD(unsigned short, item, 0x20) = fl | 8;
+    g_origDmi(menu, item, a, b, c, d);
+    RD(unsigned short, item, 0x20) = fl;
 }
 
 static void hook_Cie(void *field, int ev)
@@ -4862,20 +4902,22 @@ static void hook_Cie(void *field, int ev)
     void *game = game_inst();
     if (!game) return;
     u8 *a = (u8 *)game + G_ITEMDATA + ALARM_ID * ITEM_SZ;
-    int f = alarm_pick(game, field);
-    int idx = f >= 0 ? ((FieldIntFn)(g_base + OFF_EVID2IDX))(field, EV_ENCOUNT) : -1;
-    if (f >= 0 && idx < 0) LOGE("alarm: common event %x not found", EV_ENCOUNT);
-    if (idx < 0) {
+    int f = -1;
+    int row = alarm_scan(game, field, 1, &f);
+    int idx = row >= 0 ? ((FieldIntFn)(g_base + OFF_EVID2IDX))(field, EV_ENCOUNT) : -1;
+    if (row >= 0 && idx < 0) LOGE("alarm: common event %x not found", EV_ENCOUNT);
+    if (idx < 0) {   /* 選べないようにしてあるので、ふつうは来ない */
         RD(unsigned short, a, 0x20) &= ~0x20;   /* メニューに残し、減らさない */
         g_alarmRestore = 1;
-        ((DlgFn)(g_base + OFF_STARTDLG))(game, 0, 0, g_sjis ? k_nothingSJ : k_nothingU8, 0x65, 0, 1);
         return;
     }
     int boot = ((FieldIntFn)(g_base + OFF_EVBOOT))(field, idx);
     ((SeFn)(g_base + OFF_RESERVESE))((u8 *)game + G_SOUND, SE_ALARM);
+    RD(int, field, F_WORK) = row;
     g_alarmForm = f; g_alarmFrame = g_frame;
     ((PushEvFn)(g_base + OFF_PUSHEV))(field, idx, EV_ENC_LINE, boot == 5, idx, 0);
-    LOGI("alarm: event %x (index %d, boot %d) pushed at line %d", EV_ENCOUNT, idx, boot, EV_ENC_LINE);
+    ((MoveEvFn)(g_base + OFF_MOVEEV))(field, idx, 1);
+    LOGI("alarm: event %x (index %d, boot %d) started at line %d, row %d", EV_ENCOUNT, idx, boot, EV_ENC_LINE, row);
 }
 
 /* 毎フレーム：使えなかったときに外した印を戻す */
@@ -4907,7 +4949,7 @@ static void hook_SEnc(void *field, u8 *sc)
     g_origSEnc(field, sc);
 }
 
-/* 店を開いたあと：道具屋（種類0＝道具を1つでも売る店。終盤はポーションを置かない店がある）ならアラームを末尾に、終章のファブリカの武器屋なら夢の竪琴をメルヘンハープの前に */
+/* 店を開いたあと：道具屋（種類0＝道具を1つでも売る店。終盤はポーションを置かない店がある）ならアラームをテントの前に、終章のファブリカの武器屋なら夢の竪琴をメルヘンハープの前に */
 static void hook_Shop(void *field, u8 *sc)
 {
     g_origShop(field, sc);
@@ -4927,7 +4969,11 @@ static void hook_Shop(void *field, u8 *sc)
         if (it[i] == 141) claw = 1;
     }
     if (tool && alarm < 0 && RD(int, game, G_ITEMDATA + ALARM_ID * ITEM_SZ + 0x14) == 100) {
-        it[n] = ALARM_ID; RD(int, game, G_SHOP_N) = ++n;
+        int at = n;   /* テントの前（なければ末尾） */
+        for (int i = 0; i < n; i++) if (it[i] == TENT_ID) { at = i; break; }
+        for (int i = n; i > at; i--) it[i] = it[i - 1];
+        it[at] = ALARM_ID; RD(int, game, G_SHOP_N) = ++n;
+        if (harp >= at) harp++;
         static int nl;
         if (nl++ < 10) LOGI("alarm: added to shop (map %d, %d items)", g_curMap, n);
     }
@@ -5769,6 +5815,8 @@ void Java_com_square_1enix_android_1googleplay_ffl_1gp_FFLMod_install(void *env,
         { OFF_CMMC_GOT,     OFF_CMMC_FUNC,     (uintptr_t)hook_Cmmc,       (void **)&g_origCmmc,    "CreateMemberMenuCommand", 0 },
         { OFF_CAM_GOT,      OFF_CAM_FUNC,      (uintptr_t)hook_Cam,        (void **)&g_origCam,     "ChrActionMagic", 0 },
         { OFF_CIE_GOT,      OFF_CIE_FUNC,      (uintptr_t)hook_Cie,        (void **)&g_origCie,     "CallItemEvent", 0 },
+        { OFF_ISSEL_GOT,    OFF_ISSEL_FUNC,    (uintptr_t)hook_IsSel,      (void **)&g_origIsSel,   "IsItemSelect", 0 },
+        { OFF_DMI_GOT,      OFF_DMI_FUNC,      (uintptr_t)hook_Dmi,        (void **)&g_origDmi,     "DrawMenuItem", 0 },
         { OFF_SHOP_GOT,     OFF_SHOP_FUNC,     (uintptr_t)hook_Shop,       (void **)&g_origShop,    "ScriptShop", 0 },
         { OFF_SENC_GOT,     OFF_SENC_FUNC,     (uintptr_t)hook_SEnc,       (void **)&g_origSEnc,    "ScriptEncount", 0 },
         /* 1.0-pre3: 本当のワイド表示（末尾の9つ。SetViewPort［22］と合わせて全部そろったときだけ入れる） */
