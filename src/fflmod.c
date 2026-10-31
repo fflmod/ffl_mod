@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.0"
+#define FFLMOD_VERSION "1.1-pre1"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -4345,6 +4345,7 @@ static long hook_Rrifi(void *pal, const char *name, int slot)
     return g_origRrifi(pal, name, slot);
 }
 
+static void alarm_item(void *game);
 static void styx_tick(void)
 {
     void *game = game_inst();
@@ -4461,6 +4462,7 @@ static long hook_AppRun(void *self, void *g)
     dash_restore();                                /* イベントなどほかの処理が動かす前にも戻しておく */
     if (g_installed && (g_frame % 30) == 0) guest_tick();
     if (g_installed && (g_frame % 30) == 15) styx_tick();
+    if (g_installed && (g_frame % 30) == 20) { void *gm = game_inst(); if (gm) alarm_item(gm); }
     if (g_installed && (g_frame % 30) == 20) memories_cost_tick(game_inst());
     if (g_installed) reward_rate_tick();
     if (g_installed) menu_step_tick(cur);
@@ -4715,6 +4717,204 @@ static void hook_Cam(void *b, u8 *act)
     RD(int, b, 0x6dfc + 0xff8) |= 8;
     static int nlog;
     if (nlog < 10) { nlog++; LOGI("styx: blue magic %d start effect %d (mp %d -> %d)", RD(int, act, 0x46c), kind, mp0, RD(int, act, 0x38)); }
+}
+
+/* 1.1: アラーム（FF4 のもの）。空きのアイテム 489 を道具にし、道具屋（品ぞろえにポーションがある店）で 100 ギルで売る。
+   フィールドで使うと警報（SE 74）を鳴らし、狩りの対象の編成（alarm_tab.h）を呼ぶ：今いる区画の1段目（稼ぎ・しっぽ・
+   ドロップ限定装備）→ 2段目（牙だけ）→ そのマップで一番重みの低い編成。同じ段では重みの低い方、同じ重みはランダム。
+   戦闘はふつうのエンカウントと同じく共通イベント 0x0106 の抽選（36行目から）に任せ、ScriptEncount で編成だけ差し替える。
+   エンカウントのないマップでは「何も起こらなかった」を出して減らさない。
+   あわせて、終章のファブリカの武器屋（マテルの村の品をまとめた店）に、入れ忘れの夢の竪琴を足す */
+#include "alarm_tab.h"
+#define ALARM_ID       489
+#define TENT_ID        435
+#define G_ITEMDATA     0x25380        /* GameClass: ITEM_DATA[640]（0x60 ずつ。+0 名前 +8 説明 +0x10 種類 +0x14 値段 +0x1a イベント +0x1c 戦闘 +0x20 印） */
+#define ITEM_SZ        0x60
+#define G_BAG          0x25340        /* GameClass: 持ち物の一覧（int*、MenuClass +0x28 が位置） */
+#define G_SOUND        0xb0           /* GameClass: SoundCtrlClass */
+#define G_SHOP_N       0x19ec8        /* GameClass: 店の品数（ScriptShop が書く） */
+#define G_SHOP_ITEMS   0x19ed8        /* GameClass: 店の品（int[64]） */
+#define F_ENC_N        0xac0          /* FieldClass: エンカウントの表の数 */
+#define F_ENC_TAB      0xac8          /* FieldClass: 表（int×6：編成, 重み, x1, y1, x2, y2） */
+#define F_ENC_RATE     0xad0          /* FieldClass: エンカウント率（0 ならエンカウントしない） */
+#define F_WORK         0xe9ac         /* FieldClass: 台本の作業値 */
+#define SE_ALARM       74             /* 空中戦艦の火薬庫などの警報 */
+#define EV_ENCOUNT     0x0106         /* 共通イベント：ランダムエンカウント */
+#define EV_ENC_LINE    36             /* その中の抽選の始まり */
+#define OFF_USEITEM_FUNC  0x403e0cUL  /* MenuClass::UseItem(int) */
+#define OFF_USEITEM_GOT   0x4604c8UL
+#define OFF_SHOP_FUNC     0x3bcc70UL  /* FieldClass::ScriptShop(char*) */
+#define OFF_SHOP_GOT      0x45f6b8UL
+#define OFF_SENC_FUNC     0x3bcd6cUL  /* FieldClass::ScriptEncount(char*) */
+#define OFF_SENC_GOT      0x45f6c0UL
+#define OFF_EVID2IDX      0x3cf778UL  /* FieldClass::EventIDToIndex(int) */
+#define OFF_EVBOOT        0x3c10d4UL  /* FieldClass::GetEventBootCondition(int) */
+#define OFF_PUSHEV        0x3d197cUL  /* FieldClass::PushEventInfo(int, int, int, int, int) */
+#define OFF_REFPARTY      0x3ce5c8UL  /* FieldClass::GetReferenceParty(int, int, int) */
+#define OFF_RESERVESE     0x41a888UL  /* SoundCtrlClass::ReserveSE(int) */
+#define OFF_ADDITEM       0x3e3188UL  /* GameClass::AddItem(int, int) */
+#define OFF_STARTDLG      0x3edbd0UL  /* GameClass::StartDialog(int, const char*, const char*, int, int, bool) */
+typedef int (*UseItemFn)(void *menu, int a);
+typedef void (*ScriptFn)(void *field, u8 *sc);
+typedef int (*FieldIntFn)(void *field, int a);
+typedef void (*PushEvFn)(void *field, int a, int b, int c, int d, int e);
+typedef int (*RefPartyFn)(void *field, int a, int b, int c);
+typedef void (*SeFn)(void *snd, int id);
+typedef void (*AddItemFn)(void *game, int id, int n);
+typedef void (*DlgFn)(void *game, int a, const char *t, const char *m, int b, int c, int d);   /* 最後は bool */
+static UseItemFn g_origUseItem;
+static ScriptFn g_origShop, g_origSEnc;
+static int g_alarmForm = -1;          /* 次の ScriptEncount で差し替える編成（-1 はなし） */
+static unsigned g_alarmFrame;
+static const char k_alarmNameSJ[] = "\x83\x41\x83\x89\x81\x5b\x83\x80", k_alarmNameU8[] = "アラーム";
+static const char k_alarmHelpSJ[] = "\x83\x82\x83\x93\x83\x58\x83\x5e\x81\x5b\x82\xf0\x8c\xc4\x82\xd1\x8a\xf1\x82\xb9\x82\xe9",
+                  k_alarmHelpU8[] = "モンスターを呼び寄せる";
+static const char k_nothingSJ[] = "\x89\xbd\x82\xe0\x8b\x4e\x82\xb1\x82\xe7\x82\xc8\x82\xa9\x82\xc1\x82\xbd", k_nothingU8[] = "何も起こらなかった";
+
+/* アイテム 489（名前のない空き、種類 0x19）をテントの写しから作る。名前・説明・値段 100・イベントなし・どこでも選べる印 */
+static void alarm_item(void *game)
+{
+    if (g_sjis < 0) return;
+    u8 *a = (u8 *)game + G_ITEMDATA + ALARM_ID * ITEM_SZ, *t = (u8 *)game + G_ITEMDATA + TENT_ID * ITEM_SZ;
+    const char *nm = g_sjis ? k_alarmNameSJ : k_alarmNameU8;
+    if (*(const char **)a == nm) return;
+    const char *old = *(const char **)a;
+    if (a[0x10] != 0x19 || (old && *old) || RD(unsigned short, t, 0x1a) != 1) {
+        static int told;
+        if (!told) { told = 1; LOGE("alarm: item %d is not free (type %x, name %d) or tent differs (event %d), skipped", ALARM_ID, a[0x10],
+                                    old && *old, RD(unsigned short, t, 0x1a)); }
+        return;
+    }
+    for (int k = 0; k < ITEM_SZ; k++) a[k] = t[k];
+    *(const char **)a = nm;
+    *(const char **)(a + 8) = g_sjis ? k_alarmHelpSJ : k_alarmHelpU8;
+    RD(unsigned, a, 0x14) = 100;
+    RD(unsigned short, a, 0x1a) = 0;
+    RD(unsigned short, a, 0x20) = (RD(unsigned short, t, 0x20) & ~8) | 1;   /* テントのセーブポイント限定（bit3）を外し、いつでも選べる（bit0） */
+    LOGI("alarm: item %d ready (flags %x)", ALARM_ID, RD(unsigned short, a, 0x20));
+}
+
+static int alarm_tier(int ch, int form)
+{
+    unsigned key = (unsigned)((ch << 16) | (form & 0xffff)) << 2;
+    int lo = 0, hi = (int)(sizeof(k_alarmTab) / sizeof(k_alarmTab[0])) - 1;
+    while (lo <= hi) {
+        int m = (lo + hi) / 2;
+        unsigned v = k_alarmTab[m] & ~3u;
+        if (v == key) return (int)(k_alarmTab[m] & 3);
+        if (v < key) lo = m + 1; else hi = m - 1;
+    }
+    return 0;
+}
+
+static unsigned alarm_rand(void)
+{
+    static unsigned x = 0x9e3779b9u;
+    x ^= g_frame * 2654435761u; x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    return x;
+}
+
+/* 編成を選ぶ。選べないとき -1 */
+static int alarm_pick(void *game, void *field)
+{
+    int n = RD(int, field, F_ENC_N), rate = RD(int, field, F_ENC_RATE);
+    int *e = (int *)RDP(field, F_ENC_TAB);
+    if (n <= 0 || !e || rate <= 0) { LOGI("alarm: no encounter here (n %d rate %d)", n, rate); return -1; }
+    int x = ((RefPartyFn)(g_base + OFF_REFPARTY))(field, 0, 1, 1), y = ((RefPartyFn)(g_base + OFF_REFPARTY))(field, 0, 1, 2);
+    int ch = RD(int, game, G_CHAPTER);
+    int here = 0;
+    int bestT = 9, bestW = 1 << 30, bestF = -1, ties = 0;     /* 今いる区画の対象 */
+    int lowW = 1 << 30, lowF = -1, lowTies = 0;                /* マップ全体で一番重みの低い編成 */
+    for (int i = 0; i < n && i < 64; i++) {
+        int *r = e + i * 6;
+        int f = r[0], w = r[1];
+        if (f <= 0 || w <= 0) continue;
+        int in = x >= r[2] && x <= r[4] && y >= r[3] && y <= r[5];
+        int t = alarm_tier(ch, f);
+        LOGI("alarm:  [%d] form %d weight %d rect %d,%d-%d,%d%s tier %d", i, f, w, r[2], r[3], r[4], r[5], in ? " here" : "", t);
+        if (in) here = 1;
+        if (in && t && (t < bestT || (t == bestT && w < bestW))) { bestT = t; bestW = w; bestF = f; ties = 1; }
+        else if (in && t && t == bestT && w == bestW && alarm_rand() % (unsigned)++ties == 0) bestF = f;
+        if (w < lowW) { lowW = w; lowF = f; lowTies = 1; }
+        else if (w == lowW && alarm_rand() % (unsigned)++lowTies == 0) lowF = f;
+    }
+    if (!here) { LOGI("alarm: no entry covers %d,%d", x, y); return -1; }
+    int f = bestF >= 0 ? bestF : lowF;
+    LOGI("alarm: chapter %d map %d at %d,%d -> form %d (%s)", ch, g_curMap, x, y, f,
+         bestF >= 0 ? (bestT == 1 ? "tier 1" : "tier 2") : "lowest weight");
+    return f;
+}
+
+static int hook_UseItem(void *menu, int a)
+{
+    void *game = game_inst();
+    int *bag = game ? (int *)RDP(game, G_BAG) : 0;
+    if (!menu || !bag || bag[RD(int, menu, 0x28)] != ALARM_ID) return g_origUseItem(menu, a);
+    void *field = (u8 *)game + G_FIELD;
+    int f = alarm_pick(game, field);
+    if (f < 0) {
+        ((DlgFn)(g_base + OFF_STARTDLG))(game, 0, 0, g_sjis ? k_nothingSJ : k_nothingU8, 0x65, 0, 1);
+        return 0;
+    }
+    int idx = ((FieldIntFn)(g_base + OFF_EVID2IDX))(field, EV_ENCOUNT);
+    if (idx < 0) { LOGE("alarm: common event %x not found", EV_ENCOUNT); return 0; }
+    int boot = ((FieldIntFn)(g_base + OFF_EVBOOT))(field, idx);
+    ((AddItemFn)(g_base + OFF_ADDITEM))(game, ALARM_ID, -1);
+    ((SeFn)(g_base + OFF_RESERVESE))((u8 *)game + G_SOUND, SE_ALARM);
+    g_alarmForm = f; g_alarmFrame = g_frame;
+    ((PushEvFn)(g_base + OFF_PUSHEV))(field, idx, EV_ENC_LINE, boot == 5, idx, 0);
+    LOGI("alarm: event %x (index %d, boot %d) pushed at line %d", EV_ENCOUNT, idx, boot, EV_ENC_LINE);
+    return 1;
+}
+
+static void hook_SEnc(void *field, u8 *sc)
+{
+    int *w = (int *)((u8 *)field + F_WORK);
+    static int nlog;
+    if (nlog < 40) {
+        nlog++;
+        LOGI("encount: map %d script %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x"
+             " work %d %d %d %d %d %d %d %d", g_curMap, sc[0], sc[1], sc[2], sc[3], sc[4], sc[5], sc[6], sc[7], sc[8], sc[9], sc[10], sc[11],
+             sc[12], sc[13], sc[14], sc[15], sc[16], sc[17], sc[18], sc[19], sc[20], sc[21], w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
+    }
+    if (g_alarmForm >= 0) {
+        if (g_frame - g_alarmFrame < 600 && sc[1]) {
+            LOGI("alarm: formation %d -> %d", w[0], g_alarmForm);
+            w[0] = g_alarmForm;
+        } else LOGE("alarm: pending formation %d dropped (frames %u, direct %d)", g_alarmForm, g_frame - g_alarmFrame, !sc[1]);
+        g_alarmForm = -1;
+    }
+    g_origSEnc(field, sc);
+}
+
+/* 店を開いたあと：道具屋ならアラームを末尾に、終章のファブリカの武器屋なら夢の竪琴をメルヘンハープの前に */
+static void hook_Shop(void *field, u8 *sc)
+{
+    g_origShop(field, sc);
+    void *game = game_inst();
+    if (!game || sc[1] != 0) return;
+    int n = RD(int, game, G_SHOP_N);
+    int *it = (int *)((u8 *)game + G_SHOP_ITEMS);
+    if (n <= 0 || n >= 64) return;
+    int potion = -1, harp = -1, dream = -1, alarm = -1, rod = 0, claw = 0;
+    for (int i = 0; i < n; i++) {
+        if (it[i] == 420) potion = i;
+        if (it[i] == 178) harp = i;
+        if (it[i] == 176) dream = i;
+        if (it[i] == ALARM_ID) alarm = i;
+        if (it[i] == 92) rod = 1;
+        if (it[i] == 141) claw = 1;
+    }
+    if (potion >= 0 && alarm < 0 && RD(int, game, G_ITEMDATA + ALARM_ID * ITEM_SZ + 0x14) == 100) {
+        it[n] = ALARM_ID; RD(int, game, G_SHOP_N) = ++n;
+        static int nl;
+        if (nl++ < 10) LOGI("alarm: added to shop (map %d, %d items)", g_curMap, n);
+    }
+    if (RD(int, game, G_CHAPTER) == 11 && n == 17 && harp >= 0 && dream < 0 && rod && claw) {
+        for (int i = n; i > harp; i--) it[i] = it[i - 1];
+        it[harp] = 176; RD(int, game, G_SHOP_N) = n + 1;
+        LOGI("shop: dream harp added (map %d)", g_curMap);
+    }
 }
 
 /* v4.00: 敵の物理技（ダメージ式が攻撃力の種類8、MGC_DATA +0x28 == 8）が HP に当たったら、たたかう と同じく
@@ -5547,6 +5747,9 @@ void Java_com_square_1enix_android_1googleplay_ffl_1gp_FFLMod_install(void *env,
         { OFF_FIRSTSEL_GOT, OFF_FIRSTSEL_FUNC, (uintptr_t)hook_FirstSel,   (void **)&g_origFirstSel, "SetFirstSelectID", 0 },
         { OFF_CMMC_GOT,     OFF_CMMC_FUNC,     (uintptr_t)hook_Cmmc,       (void **)&g_origCmmc,    "CreateMemberMenuCommand", 0 },
         { OFF_CAM_GOT,      OFF_CAM_FUNC,      (uintptr_t)hook_Cam,        (void **)&g_origCam,     "ChrActionMagic", 0 },
+        { OFF_USEITEM_GOT,  OFF_USEITEM_FUNC,  (uintptr_t)hook_UseItem,    (void **)&g_origUseItem, "UseItem", 0 },
+        { OFF_SHOP_GOT,     OFF_SHOP_FUNC,     (uintptr_t)hook_Shop,       (void **)&g_origShop,    "ScriptShop", 0 },
+        { OFF_SENC_GOT,     OFF_SENC_FUNC,     (uintptr_t)hook_SEnc,       (void **)&g_origSEnc,    "ScriptEncount", 0 },
         /* 1.0-pre3: 本当のワイド表示（末尾の9つ。SetViewPort［22］と合わせて全部そろったときだけ入れる） */
         { OFF_MSVP_GOT,     OFF_MSVP_FUNC,     (uintptr_t)hook_MSVP,       (void **)&g_origMSVP,    "MainScene::SetViewPort", 0 },
         { OFF_S2DM_GOT,     OFF_S2DM_FUNC,     (uintptr_t)hook_S2DM,       (void **)&g_origS2DM,    "Set2DModeMatrix", 0 },
