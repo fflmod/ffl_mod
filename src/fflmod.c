@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1-pre3"
+#define FFLMOD_VERSION "1.1-pre4"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -4733,7 +4733,7 @@ static void hook_Cam(void *b, u8 *act)
    1.1-pre3: 使えない場所では、セーブポイント以外のテントと同じく暗く表示して選べなくする（DrawMenuItem・IsItemSelect）。
    戦闘は、共通イベント 0x0106 を「選んだ行の番号を作業値0に入れて57行目から」動かす（57〜58行で先制・BGM などを決め、
    59行で編成を取り、64行で戦闘の共通イベント 0x0101 を呼ぶ）。積んだあと MoveEvent(番号, true) で動かす
-   （CallItemEvent と同じ。pre2 は積むだけで動かさず、操作できなくなっていた）
+   （CallItemEvent と同じ）。1.1-pre4: PushEventInfo の引数は（番号, 状態, 条件, 番号, 行）。行は最後
    あわせて、終章のファブリカの武器屋（マテルの村の品をまとめた店）に、入れ忘れの夢の竪琴を足す */
 #include "alarm_tab.h"
 #define ALARM_ID       489
@@ -4915,7 +4915,9 @@ static void hook_Cie(void *field, int ev)
     ((SeFn)(g_base + OFF_RESERVESE))((u8 *)game + G_SOUND, SE_ALARM);
     RD(int, field, F_WORK) = row;
     g_alarmForm = f; g_alarmFrame = g_frame;
-    ((PushEvFn)(g_base + OFF_PUSHEV))(field, idx, EV_ENC_LINE, boot == 5, idx, 0);
+    /* PushEventInfo(番号, 状態, 条件, 番号, 行)：状態0＝これから動かす、最後が始める行（+0x18）。
+       pre2/pre3 は状態の欄に行を入れていて、MoveEvent が知らない状態のまま回り続けて止まっていた */
+    ((PushEvFn)(g_base + OFF_PUSHEV))(field, idx, 0, boot == 5, idx, EV_ENC_LINE);
     ((MoveEvFn)(g_base + OFF_MOVEEV))(field, idx, 1);
     LOGI("alarm: event %x (index %d, boot %d) started at line %d, row %d", EV_ENCOUNT, idx, boot, EV_ENC_LINE, row);
 }
