@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1-pre6"
+#define FFLMOD_VERSION "1.1"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -4861,7 +4861,6 @@ static int alarm_scan(void *game, void *field, int lg, int *form)
         if (in) here = 1;
         if (!lg) { if (here) break; continue; }
         int t = alarm_tier(ch, f);
-        LOGI("alarm:  [%d] form %d weight %d rect %d,%d-%d,%d%s tier %d", i, f, w, r[2], r[3], r[4], r[5], in ? " here" : "", t);
         /* 1.1-pre6: 同じ段では区画の狭い方（その場所でしか出ない敵）を先に、同じ広さなら重みの低い方 */
         int ar = (r[4] - r[2] + 1) * (r[5] - r[3] + 1);
         if (in && t && (t < bestT || (t == bestT && (ar < bestA || (ar == bestA && w < bestW))))) { bestT = t; bestA = ar; bestW = w; bestI = i; ties = 1; }
@@ -4946,13 +4945,6 @@ static void alarm_frame(void)
 static void hook_SEnc(void *field, u8 *sc)
 {
     int *w = (int *)((u8 *)field + F_WORK);
-    static int nlog;
-    if (nlog < 40) {
-        nlog++;
-        LOGI("encount: map %d script %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x"
-             " work %d %d %d %d %d %d %d %d", g_curMap, sc[0], sc[1], sc[2], sc[3], sc[4], sc[5], sc[6], sc[7], sc[8], sc[9], sc[10], sc[11],
-             sc[12], sc[13], sc[14], sc[15], sc[16], sc[17], sc[18], sc[19], sc[20], sc[21], w[0], w[1], w[2], w[3], w[4], w[5], w[6], w[7]);
-    }
     if (g_alarmForm >= 0) {
         if (g_frame - g_alarmFrame < 600 && sc[1]) {
             LOGI("alarm: formation %d -> %d", w[0], g_alarmForm);
