@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1-pre4"
+#define FFLMOD_VERSION "1.1-pre5"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -4765,6 +4765,9 @@ static void hook_Cam(void *b, u8 *act)
 #define OFF_RESERVESE     0x41a888UL  /* SoundCtrlClass::ReserveSE(int) */
 #define OFF_ADDITEM       0x3e3188UL  /* GameClass::AddItem(int, int) */
 #define OFF_MOVEEV        0x3d23d8UL  /* FieldClass::MoveEvent(int, bool) */
+#define OFF_GETWAIT       0x3c206cUL  /* FieldClass::GetWaitInfo(int) */
+#define OFF_SETWAIT       0x3c20fcUL  /* FieldClass::SetWait(int*, int, int) */
+#define ALARM_WAIT        84          /* 警報が鳴り終わるまで（ヘリオガバルスでは SE 74 に合わせて 14 フレームの点滅を6回） */
 #define OFF_ISSEL_FUNC    0x403c5cUL  /* MenuClass::IsItemSelect(int) */
 #define OFF_ISSEL_GOT     0x4604d8UL
 #define OFF_DMI_FUNC      0x410a58UL  /* MenuClass::DrawMenuItem(ITEM_DATA*, int, int, int, int) */
@@ -4777,6 +4780,8 @@ typedef int (*RefPartyFn)(void *field, int a, int b, int c);
 typedef void (*SeFn)(void *snd, int id);
 typedef void (*AddItemFn)(void *game, int id, int n);
 typedef void (*MoveEvFn)(void *field, int idx, int now);
+typedef int *(*GetWaitFn)(void *field, int idx);
+typedef void (*SetWaitFn)(void *field, int *w, int type, int frames);
 typedef int (*IsSelFn)(void *menu, int pos);
 typedef void (*DmiFn)(void *menu, u8 *item, int a, int b, int c, int d);
 static CieFn g_origCie;
@@ -4917,7 +4922,11 @@ static void hook_Cie(void *field, int ev)
     g_alarmForm = f; g_alarmFrame = g_frame;
     /* PushEventInfo(番号, 状態, 条件, 番号, 行)：状態0＝これから動かす、最後が始める行（+0x18）。
        pre2/pre3 は状態の欄に行を入れていて、MoveEvent が知らない状態のまま回り続けて止まっていた */
-    ((PushEvFn)(g_base + OFF_PUSHEV))(field, idx, 0, boot == 5, idx, EV_ENC_LINE);
+    /* 1.1-pre5: 警報が鳴り終わるまで待ってから戦闘へ。台本の待ち（命令 0x32）と同じく SetWait(待ち, 1, フレーム数) を入れ、
+       状態3（待っている）で積む。待っている間は、イベント中なので動けない */
+    int *wt = ((GetWaitFn)(g_base + OFF_GETWAIT))(field, idx);
+    if (wt) ((SetWaitFn)(g_base + OFF_SETWAIT))(field, wt, 1, ALARM_WAIT);
+    ((PushEvFn)(g_base + OFF_PUSHEV))(field, idx, wt ? 3 : 0, boot == 5, idx, EV_ENC_LINE);
     ((MoveEvFn)(g_base + OFF_MOVEEV))(field, idx, 1);
     LOGI("alarm: event %x (index %d, boot %d) started at line %d, row %d", EV_ENCOUNT, idx, boot, EV_ENC_LINE, row);
 }
