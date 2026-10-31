@@ -21,6 +21,10 @@ object Store {
     fun setMessage(ctx: Context, message: String, log: String) =
         sp(ctx).edit().putString("message", message).putString("log", log).apply()
 
+    /** 試験版（プレリリース）も受け取るか */
+    fun testing(ctx: Context): Boolean = sp(ctx).getBoolean("testing", false)
+    fun setTesting(ctx: Context, on: Boolean) = sp(ctx).edit().putBoolean("testing", on).apply()
+
     /** 作った APK 一式の場所 */
     fun buildDir(ctx: Context) = File(ctx.getExternalFilesDir(null), "build")
 

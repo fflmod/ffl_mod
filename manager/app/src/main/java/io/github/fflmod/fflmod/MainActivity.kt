@@ -15,6 +15,7 @@ import android.widget.Button
 import android.widget.LinearLayout
 import android.widget.ScrollView
 import android.widget.TextView
+import android.widget.Toast
 
 /**
  * 管理アプリの画面（1画面）。
@@ -48,7 +49,11 @@ class MainActivity : Activity() {
         val lp = { LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT) }
         status = TextView(this).apply { textSize = 18f }
         root.addView(status, lp())
-        versions = TextView(this).apply { textSize = 16f; setPadding(0, pad / 2, 0, 0) }
+        versions = TextView(this).apply {
+            textSize = 16f; setPadding(0, pad / 2, 0, 0)
+            /* 長押しで試験版を受け取るかを切り替える（試験用。画面には出さない） */
+            setOnLongClickListener { toggleTesting(); true }
+        }
         root.addView(versions, lp())
         result = TextView(this).apply { textSize = 16f; setPadding(0, pad / 2, 0, pad / 2) }
         root.addView(result, lp())
@@ -65,6 +70,7 @@ class MainActivity : Activity() {
         log = TextView(this).apply { textSize = 12f; setTextIsSelectable(true) }
         root.addView(log, lp())
         setContentView(ScrollView(this).apply { addView(root) })
+        Release.includePre = Store.testing(this)
         Installer.listener = { r -> main.post { onInstallResult(r) } }
     }
 
@@ -91,6 +97,17 @@ class MainActivity : Activity() {
         }.start()
     }
 
+    private fun toggleTesting() {
+        if (busy) return
+        val on = !Store.testing(this)
+        Store.setTesting(this, on)
+        Release.includePre = on
+        Toast.makeText(this, if (on) "試験版を受け取ります" else "試験版を受け取りません", Toast.LENGTH_SHORT).show()
+        latest = null
+        showVersions()
+        refresh()
+    }
+
     /** 入っている mod と最新の mod の版を並べて出す */
     private fun showVersions() {
         val st = state
@@ -106,6 +123,7 @@ class MainActivity : Activity() {
             l.isEmpty() -> sb.append("確認できませんでした")
             else -> {
                 sb.append(l)
+                if (Release.includePre) sb.append("（試験版を含む）")
                 if (st is GameState.Modded && st.version != null)
                     sb.append(if (st.version == l) "\n最新版です。" else "\nアップデートがあります。「modを更新」から入れられます。")
             }

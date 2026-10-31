@@ -14,6 +14,9 @@ object Release {
     const val FORMAT = 2
     const val INTERFACE = 1
 
+    /** 試験版（プレリリース）も最新の候補に入れるか。ふだんは正式版だけ（画面の長押しで切り替え、Store が覚える） */
+    @Volatile var includePre = false
+
     class Patch(
         val tag: String,
         val version: String,
@@ -23,7 +26,7 @@ object Release {
         val so: ByteArray,
     )
 
-    /** いちばん新しい Release（プレリリースも含む）の差分一式 */
+    /** いちばん新しい Release（試験版は includePre のときだけ）の差分一式 */
     fun fetchLatest(log: (String) -> Unit): Patch {
         val rel = latestRelease()
         val tag = rel.getString("tag_name")
@@ -56,7 +59,7 @@ object Release {
     fun latestVersion(): String = latestRelease().getString("tag_name").removePrefix("v")
 
     /**
-     * 公開した日時がいちばん新しい Release。GitHub の一覧は版の名前の順（pre10 が pre2 より後ろ）に
+     * 公開した日時がいちばん新しい Release（試験版は includePre のときだけ）。GitHub の一覧は版の名前の順（pre10 が pre2 より後ろ）に
      * 並ぶので、先頭ではなく published_at で選ぶ（ISO 8601 の UTC なので文字列の比較で足りる）
      */
     private fun latestRelease(): JSONObject {
@@ -65,6 +68,7 @@ object Release {
         for (i in 0 until list.length()) {
             val r = list.getJSONObject(i)
             if (r.optBoolean("draft") || asset(r, "files.json") == null) continue
+            if (r.optBoolean("prerelease") && !includePre) continue
             if (rel == null || r.optString("published_at") > rel.optString("published_at")) rel = r
         }
         return rel ?: throw IOException("Release が見つかりません")
