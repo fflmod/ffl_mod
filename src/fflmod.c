@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1-pre5"
+#define FFLMOD_VERSION "1.1-pre6"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -4723,7 +4723,8 @@ static void hook_Cam(void *b, u8 *act)
 
 /* 1.1: アラーム（FF4 のもの）。空きのアイテム 489 を道具にし、道具屋（品ぞろえにポーションがある店）で 100 ギルで売る。
    フィールドで使うと警報（SE 74）を鳴らし、狩りの対象の編成（alarm_tab.h）を呼ぶ：今いる区画の1段目（稼ぎ・しっぽ・
-   ドロップ限定装備）→ 2段目（牙だけ）→ そのマップで一番重みの低い編成。同じ段では重みの低い方、同じ重みはランダム。
+   ドロップ限定装備）→ 2段目（牙だけ）→ そのマップで一番重みの低い編成。同じ段では区画の狭い方、同じ広さなら重みの低い方、
+   それも同じならランダム。
    戦闘はふつうのエンカウントと同じく共通イベント 0x0106 の抽選（36行目から）に任せ、ScriptEncount で編成だけ差し替える。
    エンカウントのないマップでは「何も起こらなかった」を出して減らさない。
    1.1-pre2: 道具を使う処理は ItemFunc の中にもあり（UseItem を通らない）、どちらも ITEM_DATA +0x1a が0でなければ
@@ -4850,7 +4851,7 @@ static int alarm_scan(void *game, void *field, int lg, int *form)
     int x = ((RefPartyFn)(g_base + OFF_REFPARTY))(field, 0, 1, 1), y = ((RefPartyFn)(g_base + OFF_REFPARTY))(field, 0, 1, 2);
     int ch = RD(int, game, G_CHAPTER);
     int here = 0;
-    int bestT = 9, bestW = 1 << 30, bestI = -1, ties = 0;     /* 今いる区画の対象 */
+    int bestT = 9, bestA = 1 << 30, bestW = 1 << 30, bestI = -1, ties = 0;     /* 今いる区画の対象 */
     int lowW = 1 << 30, lowI = -1, lowTies = 0;                /* マップ全体で一番重みの低い行 */
     for (int i = 0; i < n && i < 64; i++) {
         int *r = e + i * 6;
@@ -4861,8 +4862,10 @@ static int alarm_scan(void *game, void *field, int lg, int *form)
         if (!lg) { if (here) break; continue; }
         int t = alarm_tier(ch, f);
         LOGI("alarm:  [%d] form %d weight %d rect %d,%d-%d,%d%s tier %d", i, f, w, r[2], r[3], r[4], r[5], in ? " here" : "", t);
-        if (in && t && (t < bestT || (t == bestT && w < bestW))) { bestT = t; bestW = w; bestI = i; ties = 1; }
-        else if (in && t && t == bestT && w == bestW && alarm_rand() % (unsigned)++ties == 0) bestI = i;
+        /* 1.1-pre6: 同じ段では区画の狭い方（その場所でしか出ない敵）を先に、同じ広さなら重みの低い方 */
+        int ar = (r[4] - r[2] + 1) * (r[5] - r[3] + 1);
+        if (in && t && (t < bestT || (t == bestT && (ar < bestA || (ar == bestA && w < bestW))))) { bestT = t; bestA = ar; bestW = w; bestI = i; ties = 1; }
+        else if (in && t && t == bestT && ar == bestA && w == bestW && alarm_rand() % (unsigned)++ties == 0) bestI = i;
         if (w < lowW) { lowW = w; lowI = i; lowTies = 1; }
         else if (w == lowW && alarm_rand() % (unsigned)++lowTies == 0) lowI = i;
     }
