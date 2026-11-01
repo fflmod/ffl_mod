@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.7-pre3"
+#define FFLMOD_VERSION "1.1.7-pre4"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -3104,6 +3104,24 @@ bad:
     if (!told) { told = 1; LOGE("charm: common event 0x119 differs, kept"); }
 }
 
+/* 1.1.7: ナイト編CDの屋外7マップ（章8 1900〜1913）は、入ったときのイベント（ev0）の命令 0x27「27 03 80 80 80 00 00 01 01 番号 00 00」で
+   その番号以降のキャラを半分の明るさで描く（残骸を暗く見せる指定。本編にはない）。残す岩の山が暗く見えるので、色を ff ff ff にする */
+static void knight_tint(unsigned char *h, int cnt)
+{
+    if (h[0] != 0 || h[1] != 0 || g_curMap < 1900 || g_curMap > 1915) return;
+    void *game = game_inst();
+    if (!game || RD(int, game, G_CHAPTER) != 8) return;
+    unsigned char *q = h + 0x41;
+    for (int k = 0; k < cnt; k++, q += 1 + q[0]) {
+        unsigned char *L = q + 1;
+        if (q[0] == 12 && L[0] == 0x27 && L[1] == 3 && L[2] == 0x80 && L[3] == 0x80 && L[4] == 0x80 &&
+            L[5] == 0 && L[6] == 0 && L[7] == 1 && L[8] == 1 && L[10] == 0 && L[11] == 0) {
+            L[2] = L[3] = L[4] = 0xff;
+            LOGI("map: knight challenge %d tint from event %d removed", g_curMap, L[9]);
+        }
+    }
+}
+
 static void hook_LoadEv(void *field, unsigned char *data, int off, void *hdrs, void *lines, void *counts, int n)
 {
     g_dashChara = 0; g_dashOrig = 0;               /* マップが変わったらダッシュの戻し待ちは捨てる */
@@ -3127,6 +3145,7 @@ static void hook_LoadEv(void *field, unsigned char *data, int off, void *hdrs, v
         dancer_circle(h);
         if (cnt) msgbox_fix(h, cnt);
         charm_fix(h, cnt);
+        if (cnt) knight_tint(h, cnt);
         if (be16(h + 0x2b) == 12 && h[7] == 1 && h[8] == 0) {
             if (first && dungeon_dest(dest) && first[1] == 0x3d && first[4] == 1 && be16(first + 7) == 5) {
                 h[6] = 1; h[7] = 0; h[8] = 1;                 /* 人として出し、話しかけで起動 */
@@ -3882,52 +3901,6 @@ static int hook_GSPX(void *field, int layer)
     return r;
 }
 
-/* 1.1.7 試験版：ナイト編CD 1907/1909/1913 の描く順と岩・主人公の描き方をログに出す（240 フレームに1回、1フレーム分、地図ごとに10回まで） */
-#define OFF_DCH1_FUNC 0x3bfed0UL
-#define OFF_DCH1_GOT  0x45f7e0UL
-#define OFF_DCH2_FUNC 0x3c0340UL
-#define OFF_DCH2_GOT  0x45f810UL
-#define OFF_DMC_FUNC  0x3bf1dcUL
-#define OFF_DMC_GOT   0x45f7e8UL
-typedef void (*Dch1Fn)(void *field, void *g, int *ch, void *mtx);
-typedef void (*Dch2Fn)(void *field, void *g, int *ch, int a, int b, int c, int d, int e, void *mtx);
-typedef void (*DmcFn)(void *field, void *g, int layer, int a, int b);
-static Dch1Fn g_origDch1;
-static Dch2Fn g_origDch2;
-static DmcFn g_origDmc;
-static int g_diagMap, g_diagN;
-static unsigned g_diagFrame = 0xffffffffu;
-static int diag_on(void)
-{
-    if (!g_diagMap || g_diagN >= 10) return 0;
-    if (g_diagFrame == g_frame) return 1;
-    if (g_diagFrame == 0xffffffffu || g_frame - g_diagFrame >= 240) { g_diagFrame = g_frame; g_diagN++; LOGI("diag: map %d frame %u", g_diagMap, g_frame); return 1; }
-    return 0;
-}
-static void hook_Dmc(void *field, void *g, int layer, int a, int b)
-{
-    if (diag_on()) LOGI("diag: chips L%d %d %d", layer, a, b);
-    g_origDmc(field, g, layer, a, b);
-}
-static void hook_Dch1(void *field, void *g, int *ch, void *mtx)
-{
-    if (diag_on() && ch)
-        LOGI("diag: chara id %d xy %d %d L%d +48 %x +50 %d +54 %d +58 %d +6c %d +34 %d +38 %d",
-             ch[0], ch[2], ch[3], ch[4], ch[0x12], ch[0x14], ch[0x15], ch[0x16], ch[0x1b], ch[0xd], ch[0xe]);
-    g_origDch1(field, g, ch, mtx);
-}
-static void hook_Dch2(void *field, void *g, int *ch, int a, int b, int c, int d, int e, void *mtx)
-{
-    int on = diag_on() && ch;
-    g_origDch2(field, g, ch, a, b, c, d, e, mtx);
-    if (on) {
-        unsigned char *ac = (unsigned char *)field + ch[0x14] * 0xf0;
-        LOGI("diag:  draw id %d args %d %d %d %d %d col %08x %08x %08x %08x %08x %08x",
-             ch[0], a, b, c, d, e, *(unsigned *)(ac + 0x3ec0), *(unsigned *)(ac + 0x3ec4), *(unsigned *)(ac + 0x3ec8),
-             *(unsigned *)(ac + 0x3ecc), *(unsigned *)(ac + 0x3ed0), *(unsigned *)(ac + 0x3ed4));
-    }
-}
-
 static void hook_LoadMI(void *field, unsigned char *data, int off)
 {
     unsigned char *d = data + off;
@@ -3982,12 +3955,10 @@ static void hook_LoadMI(void *field, unsigned char *data, int off)
         if (off == 0 && game && RD(int, game, G_CHAPTER) == 6 &&
             ((g_curMap == 2006 && W == 40 && H == 40) || (g_curMap == 2010 && W == 44 && H == 43)))
             *(volatile unsigned char *)((uintptr_t)field + 0xdc32) = 1;
-        /* 1.1.7: ナイト編CD 1907（35x45）と 1913（31x26）だけ、画面の右端をマップの右端で止める（hook_GSPX） */
+        /* 1.1.7: ナイト編CD 1907（35x45）・1911（22x26）・1913（31x26）だけ、画面の右端をマップの右端で止める（hook_GSPX） */
         if (off == 0) g_edgeR = (game && RD(int, game, G_CHAPTER) == 8 &&
-                                 ((g_curMap == 1907 && W == 35 && H == 45) || (g_curMap == 1913 && W == 31 && H == 26)));
-        if (off == 0) g_diagMap = (game && RD(int, game, G_CHAPTER) == 8 &&
-                                   (g_curMap == 1907 || g_curMap == 1909 || g_curMap == 1913)) ? g_curMap : 0;
-        if (off == 0) { g_diagN = 0; g_diagFrame = 0xffffffffu; }
+                                 ((g_curMap == 1907 && W == 35 && H == 45) || (g_curMap == 1911 && W == 22 && H == 26) ||
+                                  (g_curMap == 1913 && W == 31 && H == 26)));
     }
 }
 
@@ -5993,9 +5964,6 @@ void Java_com_square_1enix_android_1googleplay_ffl_1gp_FFLMod_install(void *env,
         { OFF_CMP_GOT,      OFF_CMP_FUNC,      (uintptr_t)hook_CMP,        (void **)&g_origCMP,     "CheckMovePass", 0 },
         { OFF_IEDC_GOT,     OFF_IEDC_FUNC,     (uintptr_t)hook_IEDC,       (void **)&g_origIEDC,    "InitEventDataOfChara", 0 },
         { OFF_GSPX_GOT,     OFF_GSPX_FUNC,     (uintptr_t)hook_GSPX,       (void **)&g_origGSPX,    "GetScrollPosX", 0 },
-        { OFF_DCH1_GOT,     OFF_DCH1_FUNC,     (uintptr_t)hook_Dch1,       (void **)&g_origDch1,    "DrawChara1", 0 },
-        { OFF_DCH2_GOT,     OFF_DCH2_FUNC,     (uintptr_t)hook_Dch2,       (void **)&g_origDch2,    "DrawChara2", 0 },
-        { OFF_DMC_GOT,      OFF_DMC_FUNC,      (uintptr_t)hook_Dmc,        (void **)&g_origDmc,     "DrawMapChips", 0 },
         { OFF_LFORM_GOT,    OFF_LFORM_FUNC,    (uintptr_t)hook_LForm,      (void **)&g_origLForm,   "LoadFormation", 0 },
         { OFF_SETML_GOT,    OFF_SETML_FUNC,    (uintptr_t)hook_SetML,      (void **)&g_origSetML,   "SetMemberLevel", 0 },
         { OFF_LEVELUP_GOT,  OFF_LEVELUP_FUNC,  (uintptr_t)hook_LevelUp,    (void **)&g_origLevelUp, "LevelUp", 0 },
