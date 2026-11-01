@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.7-pre5"
+#define FFLMOD_VERSION "1.1.7-pre6"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -3337,8 +3337,42 @@ static void eartheater_apply(int dancer)
     }
     g_eeState = dancer;
 }
+/* 1.1.7: エルダードラゴン(No.421、Lv65 HP52600 攻撃196 倍率16 素早さ58 魔力110)。ナイト編はチャレンジダンジョンのボス（編成160）、
+   終章は編成141。アースイーターと同じく章8の戦闘でだけ書き換え、ほかの章では元に戻す。
+   Lv60 HP32000 攻撃164 倍率10 素早さ40-40 魔力86（ユーザー指定）。ほかの欄は元のまま */
+#define ELDERDRAGON_ID 421
+static unsigned char g_edOrig[0x50];
+static int g_edSaved, g_edState = -1;
+static void elderdragon_apply(int knight)
+{
+    void *game = game_inst();
+    if (!game) return;
+    unsigned char *e = ((GetEnemyFn)(g_base + OFF_GETENEMY))(game, ELDERDRAGON_ID);
+    if (!e) return;
+    if (!g_edSaved) {
+        if (e[0x8] != 65 || *(int *)(e + 0x0c) != 52600) { LOGE("elder dragon: unexpected Lv %d HP %d, skip", e[0x8], *(int *)(e + 0x0c)); return; }
+        for (int i = 0; i < 0x50; i++) g_edOrig[i] = e[i];
+        g_edSaved = 1;
+    }
+    if (knight == g_edState) return;
+    for (int i = 0; i < 0x50; i++) e[i] = g_edOrig[i];
+    if (knight) {
+        e[0x08] = 60;                         /* Lv */
+        *(int *)(e + 0x0c) = 32000;           /* HP */
+        e[0x19] = 164;                        /* 攻撃力 */
+        e[0x1a] = 10;                         /* 攻撃の倍率 */
+        e[0x22] = 40; e[0x23] = 40;           /* 素早さ 下限・上限 */
+        e[0x24] = 86;                         /* 魔力 */
+    }
+    g_edState = knight;
+    LOGI("elder dragon: %s", knight ? "knight chapter values" : "original values");
+}
 static void hook_SetBEP(void *bc, void *act, int id, int a, int b, int c)
 {
+    if (id == ELDERDRAGON_ID) {
+        void *game = game_inst();
+        elderdragon_apply(game && RD(int, game, G_CHAPTER) == 8);
+    }
     if (id == EARTHEATER_ID) {
         void *game = game_inst();
         eartheater_apply(game && RD(int, game, G_CHAPTER) == 7);
@@ -3876,7 +3910,7 @@ static void hook_SetML(void *field, int member, int level, int flag)
 typedef int (*GspxFn)(void *field, int layer);
 static GspxFn g_origGSPX;
 static int g_edgeR;
-static int g_edgePx;   /* 止める線（地図の左からの画素）。1907 は岩 (32,32) の右側 33×32 */
+static int g_edgePx;   /* 止める線（地図の左からの画素）。0 なら地図の右端。地図が画面より狭くても止めるのはこれを指定した地図だけ */
 static int hook_GSPX(void *field, int layer)
 {
     int r = g_origGSPX(field, layer);
@@ -3890,11 +3924,11 @@ static int hook_GSPX(void *field, int layer)
     float sw = *(float *)((unsigned char *)field + 0xc);
     int e = (int)(g_wideE + 0.999f);
     int maxpos = (g_edgePx > 0 ? g_edgePx : W * 32) - (int)sw - e;
-    if (maxpos < 0) return r;
+    if (maxpos < 0 && g_edgePx <= 0) return r;   /* 地図が画面より狭いときは、止める線を指定した地図（g_edgePx）だけ止める */
     int pos = r * 16 / rate, r0 = r;
     if (pos > maxpos) r = maxpos * rate / 16;
     static unsigned lastF = 0xffffffffu; static int cnt;
-    if (g_frame - lastF >= (g_curMap == 1907 ? 60u : 120u) || (g_frame == lastF && cnt < 4)) {
+    if (g_frame - lastF >= (g_curMap == 1912 ? 60u : 120u) || (g_frame == lastF && cnt < 4)) {
         if (g_frame != lastF) { lastF = g_frame; cnt = 0; }
         cnt++;
         LOGI("diag: gspx L%d in %d out %d W %d sw %d rate %d e %d max %d", layer, r0, r, W, (int)sw, rate, e, maxpos);
@@ -3902,43 +3936,6 @@ static int hook_GSPX(void *field, int layer)
     return r;
 }
 
-
-/* 1.1.7-pre5 試験版：1907 で、毎秒1フレーム分、地図（層1）と主人公（125）を描いた位置と、層の構造の値をログに出す */
-#define OFF_DCH2_FUNC 0x3c0340UL
-#define OFF_DCH2_GOT  0x45f810UL
-#define OFF_DMC_FUNC  0x3bf1dcUL
-#define OFF_DMC_GOT   0x45f7e8UL
-typedef void (*Dch2Fn)(void *field, void *g, int *ch, int a, int b, int c, int d, int e, void *mtx);
-typedef void (*DmcFn)(void *field, void *g, int layer, int a, int b);
-static Dch2Fn g_origDch2;
-static DmcFn g_origDmc;
-static unsigned g_camF = 0xffffffffu;
-static int cam_on(void)
-{
-    if (g_curMap != 1907 || !g_edgeR) return 0;
-    if (g_camF == g_frame) return 1;
-    if (g_camF == 0xffffffffu || g_frame - g_camF >= 60) { g_camF = g_frame; return 1; }
-    return 0;
-}
-static void hook_Dmc(void *field, void *g, int layer, int a, int b)
-{
-    if (cam_on() && field) {
-        int *ls = (int *)((unsigned char *)field + 0xdba8);
-        int *L = *(int **)ls ? (int *)(*(unsigned char **)ls + layer * 48) : 0;
-        if (L) LOGI("diag: cam f%u chips L%d %d %d | %d %d %d %d %d %d %d %d %d %d %d %d | fw %d fh %d", g_frame, layer, a, b,
-                    L[0], L[1], L[2], L[3], L[4], L[5], L[6], L[7], L[8], L[9], L[10], L[11],
-                    (int)*(float *)((unsigned char *)field + 0xc), (int)*(float *)((unsigned char *)field + 0x10));
-    }
-    g_origDmc(field, g, layer, a, b);
-}
-static void hook_Dch2(void *field, void *g, int *ch, int a, int b, int c, int d, int e, void *mtx)
-{
-    if (ch && ch[0] == 125 && cam_on()) {
-        const float *mv = (const float *)((unsigned char *)g + 0x1c);
-        LOGI("diag: cam f%u player px %d %d args %d %d mv %d %d", g_frame, ch[0x15], ch[0x16], a, b, (int)mv[12], (int)mv[13]);
-    }
-    g_origDch2(field, g, ch, a, b, c, d, e, mtx);
-}
 
 static void hook_LoadMI(void *field, unsigned char *data, int off)
 {
@@ -3994,11 +3991,12 @@ static void hook_LoadMI(void *field, unsigned char *data, int off)
         if (off == 0 && game && RD(int, game, G_CHAPTER) == 6 &&
             ((g_curMap == 2006 && W == 40 && H == 40) || (g_curMap == 2010 && W == 44 && H == 43)))
             *(volatile unsigned char *)((uintptr_t)field + 0xdc32) = 1;
-        /* 1.1.7: ナイト編CD 1907（35x45）・1911（22x26）・1913（31x26）だけ、画面の右端をマップの右端で止める（hook_GSPX） */
+        /* 1.1.7: ナイト編CD 1907（35x45）・1911（22x26）・1912（14x23）・1913（31x26）だけ、画面の右端をマップの右端で止める（hook_GSPX） */
         if (off == 0) g_edgeR = (game && RD(int, game, G_CHAPTER) == 8 &&
                                  ((g_curMap == 1907 && W == 35 && H == 45) || (g_curMap == 1911 && W == 22 && H == 26) ||
-                                  (g_curMap == 1913 && W == 31 && H == 26)));
-        if (off == 0) g_edgePx = (g_edgeR && g_curMap == 1907) ? 33 * 32 : 0;
+                                  (g_curMap == 1913 && W == 31 && H == 26) || (g_curMap == 1912 && W == 14 && H == 23)));
+        /* 1.1.7: 1912（幅14、画面より狭い）は、右端（岩 (13,13) の右側）が画面の右端を越えないように止める */
+        if (off == 0) g_edgePx = (g_edgeR && g_curMap == 1912) ? 14 * 32 : 0;
     }
 }
 
@@ -6004,8 +6002,6 @@ void Java_com_square_1enix_android_1googleplay_ffl_1gp_FFLMod_install(void *env,
         { OFF_CMP_GOT,      OFF_CMP_FUNC,      (uintptr_t)hook_CMP,        (void **)&g_origCMP,     "CheckMovePass", 0 },
         { OFF_IEDC_GOT,     OFF_IEDC_FUNC,     (uintptr_t)hook_IEDC,       (void **)&g_origIEDC,    "InitEventDataOfChara", 0 },
         { OFF_GSPX_GOT,     OFF_GSPX_FUNC,     (uintptr_t)hook_GSPX,       (void **)&g_origGSPX,    "GetScrollPosX", 0 },
-        { OFF_DCH2_GOT,     OFF_DCH2_FUNC,     (uintptr_t)hook_Dch2,       (void **)&g_origDch2,    "DrawChara2", 0 },
-        { OFF_DMC_GOT,      OFF_DMC_FUNC,      (uintptr_t)hook_Dmc,        (void **)&g_origDmc,     "DrawMapChips", 0 },
         { OFF_LFORM_GOT,    OFF_LFORM_FUNC,    (uintptr_t)hook_LForm,      (void **)&g_origLForm,   "LoadFormation", 0 },
         { OFF_SETML_GOT,    OFF_SETML_FUNC,    (uintptr_t)hook_SetML,      (void **)&g_origSetML,   "SetMemberLevel", 0 },
         { OFF_LEVELUP_GOT,  OFF_LEVELUP_FUNC,  (uintptr_t)hook_LevelUp,    (void **)&g_origLevelUp, "LevelUp", 0 },
