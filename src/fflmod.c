@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.9-pre1"
+#define FFLMOD_VERSION "1.1.9-pre2"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -3134,6 +3134,23 @@ static void knight_tint(unsigned char *h, int cnt)
     }
 }
 
+/* 1.1.9-pre2: 忍者編CD 1113 の赤い扉。仕掛けを動かすと ev11 が命令0x2f（層1・x・y・タイル）で門の組を書く。
+   書く中身がナイト編で直す前の門と同じ（中段 2c 瓦礫・2d 絵なし、下段 3c 灰色）なので、2b・3b にする */
+static void ninja_gate(unsigned char *h, int cnt)
+{
+    void *game = game_inst();
+    if (!game || RD(int, game, G_CHAPTER) != 9) return;
+    unsigned char *q = h + 0x41; int n = 0;
+    for (int k = 0; k < cnt; k++, q += 1 + q[0]) {
+        unsigned char *L = q + 1;
+        if (q[0] != 13 || L[0] != 0x2f || L[1] != 1 || L[2] != 1 || L[6] != 1) continue;
+        int x = L[8], y = L[10], v = L[12];
+        if (y == 22 && (x == 12 || x == 13) && (v == 0x2c || v == 0x2d)) { L[12] = 0x2b; n++; }
+        if (y == 23 && (x == 12 || x == 13) && v == 0x3c) { L[12] = 0x3b; n++; }
+    }
+    LOGI("map: ninja challenge 1113 gate tiles %d", n);
+}
+
 static void hook_LoadEv(void *field, unsigned char *data, int off, void *hdrs, void *lines, void *counts, int n)
 {
     g_dashChara = 0; g_dashOrig = 0;               /* マップが変わったらダッシュの戻し待ちは捨てる */
@@ -3158,6 +3175,7 @@ static void hook_LoadEv(void *field, unsigned char *data, int off, void *hdrs, v
         if (cnt) msgbox_fix(h, cnt);
         charm_fix(h, cnt);
         if (cnt) knight_tint(h, cnt);
+        if (cnt == 14 && be16(h) == 11 && g_curMap == 1113) ninja_gate(h, cnt);
         if (be16(h + 0x2b) == 12 && h[7] == 1 && h[8] == 0) {
             if (first && dungeon_dest(dest) && first[1] == 0x3d && first[4] == 1 && be16(first + 7) == 5) {
                 h[6] = 1; h[7] = 0; h[8] = 1;                 /* 人として出し、話しかけで起動 */
@@ -3183,8 +3201,9 @@ static void hook_LoadEv(void *field, unsigned char *data, int off, void *hdrs, v
                 }
             }
         }
-        /* 1.1.9: 忍者編CD 1104（屋内）の鎖（絵100、登り降りの仕掛けがない）を消す */
-        if (cnt == 0 && be16(h + 0x2b) == 100 && g_curMap == 1104) {
+        /* 1.1.9: 忍者編CD 1104（屋内）の鎖（絵100、登り降りの仕掛けがない）を消す
+           1.1.9-pre2: 1114 の鎖は5マス下げるので、絨毯（6〜13行）にかかる段（元の y 6・7）を消す */
+        if (cnt == 0 && be16(h + 0x2b) == 100 && (g_curMap == 1104 || (g_curMap == 1114 && h[2] == 6 && h[3] >= 6))) {
             void *game = game_inst();
             if (game && RD(int, game, G_CHAPTER) == 9) { h[0x2b] = 0; h[0x2c] = 0; }
         }
@@ -3398,8 +3417,38 @@ static void elderdragon_apply(int knight)
     g_edState = knight;
     LOGI("elder dragon: %s", knight ? "knight chapter values" : "original values");
 }
+/* 1.1.9-pre2: ヤマタノオロチ(No.459、Lv70 HP40000 倍率15)。忍者編のチャレンジダンジョンのボス（編成210）。メモリスト編の編成285 にも出る。
+   忍者編の戦闘だけ Lv60 HP32000 倍率11（ユーザー指定）。ほかは元のまま。元の値を確かめてから書く */
+#define OROCHI_ID 459
+static unsigned char g_orOrig[0x50];
+static int g_orSaved, g_orState = -1;
+static void orochi_apply(int ninja)
+{
+    void *game = game_inst();
+    if (!game) return;
+    unsigned char *e = ((GetEnemyFn)(g_base + OFF_GETENEMY))(game, OROCHI_ID);
+    if (!e) return;
+    if (!g_orSaved) {
+        if (e[0x8] != 70 || *(int *)(e + 0x0c) != 40000) { LOGE("orochi: unexpected Lv %d HP %d, skip", e[0x8], *(int *)(e + 0x0c)); return; }
+        for (int i = 0; i < 0x50; i++) g_orOrig[i] = e[i];
+        g_orSaved = 1;
+    }
+    if (ninja == g_orState) return;
+    for (int i = 0; i < 0x50; i++) e[i] = g_orOrig[i];
+    if (ninja) {
+        e[0x08] = 60;                         /* Lv */
+        *(int *)(e + 0x0c) = 32000;           /* HP */
+        e[0x1a] = 11;                         /* 攻撃の倍率 */
+    }
+    g_orState = ninja;
+    LOGI("orochi: %s", ninja ? "ninja chapter values" : "original values");
+}
 static void hook_SetBEP(void *bc, void *act, int id, int a, int b, int c)
 {
+    if (id == OROCHI_ID) {
+        void *game = game_inst();
+        orochi_apply(game && RD(int, game, G_CHAPTER) == 9);
+    }
     if (id == ELDERDRAGON_ID) {
         void *game = game_inst();
         elderdragon_apply(game && RD(int, game, G_CHAPTER) == 8);
@@ -3768,6 +3817,8 @@ static const struct { short map; unsigned char layer, x, y; unsigned short old, 
     { 1111, 1, 10, 4, 0x12, 0x22 },
     { 1111, 1, 0, 8, 0x2d, 0x2b },
     { 1111, 1, 0, 9, 0x3d, 0x3b },
+    /* 1.1.9-pre2: 壁の角の下（上が 0x65）に置かれた別の絵 0xd7 → 角の下端 0x75（通れなさは同じ） */
+    { 1107, 1, 26, 10, 0xd7, 0x75 }, { 1107, 1, 32, 9, 0xd7, 0x75 }, { 1109, 1, 11, 67, 0xd7, 0x75 }, { 1109, 1, 5, 68, 0xd7, 0x75 },
     { 1113, 1, 1, 31, 0x12, 0x22 },
     { 1113, 1, 2, 31, 0x12, 0x22 },
     { 1113, 1, 3, 31, 0x12, 0x22 },
@@ -3866,26 +3917,31 @@ static int hook_CMP(void *field, int *ch, int layer, int x, int y, int dx, int d
 typedef void (*IedcFn)(void *field, unsigned char *h);
 static IedcFn g_origIEDC;
 /* 1.1.9: 忍者編CDの鎖（絵100）は、登り降りする列（命令0x7a のイベントの列）と絵がずれて見える。
-   スクショで測ったずれを、描く位置（+0x54 画素x）で列の真ん中に合わせる（マップ、イベントの列 x、足す画素） */
-static const short nj_chain[5][3] = { { 1103, 8, -16 }, { 1103, 18, -16 }, { 1114, 6, 16 }, { 1115, 7, 32 }, { 1115, 8, 16 } };
+   スクショで測ったずれを、描く位置（+0x54 画素x・+0x58 画素y）で直す（マップ、イベントの列 x、足す画素 x・y）
+   1.1.9-pre2: 1103・1112・1115 の下の鎖は1マス下、1114 は5マス下（ユーザー） */
+static const short nj_chain[6][4] = { { 1103, 8, -16, 32 }, { 1103, 18, -16, 32 }, { 1112, 12, -16, 32 },
+                                      { 1114, 6, 16, 160 }, { 1115, 7, 32, 0 }, { 1115, 8, 16, 32 } };
+static void *g_fieldp;   /* 1.1.9-pre2: 直近の FieldClass（hook_IndexSort で使う） */
 static void hook_IEDC(void *field, unsigned char *h)
 {
     g_origIEDC(field, h);
+    g_fieldp = field;
     if (!h) return;
     if (be16(h + 0x2b) == 100 && g_curMap >= 1100 && g_curMap <= 1115) {
         void *game = game_inst();
         if (!game || RD(int, game, G_CHAPTER) != 9) return;
-        int dx = 0;
-        for (int i = 0; i < 5; i++) if (nj_chain[i][0] == g_curMap && nj_chain[i][1] == h[2]) dx = nj_chain[i][2];
-        if (!dx) return;
+        int dx = 0, dy = 0, hit = 0;
+        for (int i = 0; i < 6; i++) if (nj_chain[i][0] == g_curMap && nj_chain[i][1] == h[2]) { dx = nj_chain[i][2]; dy = nj_chain[i][3]; hit = 1; }
+        if (!hit) return;
         int id = be16(h);
         unsigned char *c = (unsigned char *)field + 0xc68;
         for (int j = 0; j < 64; j++, c += 0xc8) {
             if (*(int *)c != id) continue;
             int *px = (int *)(c + 0x54);
             static int told;
-            if (told < 8) { told++; LOGI("map: ninja challenge %d chain %d at (%d,%d) x %d -> %d", g_curMap, id, h[2], h[3], *px, *px + dx); }
-            *px += dx;
+            int *py = (int *)(c + 0x58);
+            if (told < 8) { told++; LOGI("map: ninja challenge %d chain %d at (%d,%d) x %d y %d +(%d,%d)", g_curMap, id, h[2], h[3], *px, *py, dx, dy); }
+            *px += dx; *py += dy;
             break;
         }
         return;
@@ -4066,6 +4122,31 @@ static GspxFn g_origGSPX;
 static int g_edgeR;
 static int g_edgeL;    /* 1.1.9: 左端で止める地図（忍者編CD 1107・1111） */
 static int g_edgePx;   /* 止める線（地図の左からの画素）。0 なら地図の右端。地図が画面より狭くても止めるのはこれを指定した地図だけ */
+/* 1.1.9-pre2: 忍者編CD 1103 の鎖（ev9〜24、層1）はキャラと同じ層なので、キャラより下の段がキャラの上に描かれる。
+   SortIndexOfChara がキャラの並べ順の鍵（層の組<<16 ＋奥行き）を作って GameClass::IndexSort に渡すところで、
+   この鎖の鍵だけ 0x1000 下げる（同じ層のキャラより先、層1 のチップより後。鎖どうしの順は変えない） */
+#define OFF_ISORT_FUNC 0x3eaef8UL
+#define OFF_ISORT_GOT  0x45f800UL
+typedef void (*ISortFn)(void *game, int *keys, int n, int *idx, int m, int asc);
+static ISortFn g_origISort;
+static void hook_ISort(void *game, int *keys, int n, int *idx, int m, int asc)
+{
+    if (g_curMap == 1103 && g_fieldp && keys && idx && n > 0 && n <= 0x144) {
+        void *gm = game_inst();
+        if (gm && RD(int, gm, G_CHAPTER) == 9) {
+            for (int k = 0; k < n; k++) {
+                int v = idx[k];
+                if (v < 0 || (v & 0xff000000) != 0x1000000) continue;
+                int j = v & 0xffffff;
+                if (j >= 64) continue;
+                int id = *(int *)((unsigned char *)g_fieldp + 0xc68 + j * 0xc8);
+                if (id >= 9 && id <= 24) keys[k] -= 0x1000;
+            }
+        }
+    }
+    g_origISort(game, keys, n, idx, m, asc);
+}
+
 static int hook_GSPX(void *field, int layer)
 {
     int r = g_origGSPX(field, layer);
@@ -4080,9 +4161,9 @@ static int hook_GSPX(void *field, int layer)
     int e = (int)(g_wideE + 0.999f);
     /* 1.1.7-pre7: field+0xc（682）はワイドの余白込みの幅。g_edgePx の地図は余白を引かずに右端ぴったりで止める
        （ほかの地図は pre4 のまま余白分手前で止める。ユーザー確認済みの見た目を変えない） */
-    if (g_edgeL) {   /* 1.1.9: 左端。画面の左端が地図の左端（余白の分も含む）を越えないように */
-        int pos = r * 16 / rate;
-        if (pos < e) r = e * rate / 16;
+    if (g_edgeL) {   /* 1.1.9: 左端。画面の左端が地図の左端を越えないように
+                        1.1.9-pre2: 見える範囲は [pos, pos+sw+e]。pre1 は e で止めて左が 22px 切れた（ナイト編の pre6 と同じ誤り）→ 0 */
+        if (r < 0) r = 0;
         return r;
     }
     int maxpos = g_edgePx > 0 ? g_edgePx - (int)sw : W * 32 - (int)sw - e;
@@ -6161,6 +6242,7 @@ void Java_com_square_1enix_android_1googleplay_ffl_1gp_FFLMod_install(void *env,
         { OFF_CMP_GOT,      OFF_CMP_FUNC,      (uintptr_t)hook_CMP,        (void **)&g_origCMP,     "CheckMovePass", 0 },
         { OFF_IEDC_GOT,     OFF_IEDC_FUNC,     (uintptr_t)hook_IEDC,       (void **)&g_origIEDC,    "InitEventDataOfChara", 0 },
         { OFF_GSPX_GOT,     OFF_GSPX_FUNC,     (uintptr_t)hook_GSPX,       (void **)&g_origGSPX,    "GetScrollPosX", 0 },
+        { OFF_ISORT_GOT,    OFF_ISORT_FUNC,    (uintptr_t)hook_ISort,      (void **)&g_origISort,   "IndexSort", 0 },
         { OFF_LFORM_GOT,    OFF_LFORM_FUNC,    (uintptr_t)hook_LForm,      (void **)&g_origLForm,   "LoadFormation", 0 },
         { OFF_SETML_GOT,    OFF_SETML_FUNC,    (uintptr_t)hook_SetML,      (void **)&g_origSetML,   "SetMemberLevel", 0 },
         { OFF_LEVELUP_GOT,  OFF_LEVELUP_FUNC,  (uintptr_t)hook_LevelUp,    (void **)&g_origLevelUp, "LevelUp", 0 },
