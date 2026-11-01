@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.7-pre7"
+#define FFLMOD_VERSION "1.1.7"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -3927,14 +3927,8 @@ static int hook_GSPX(void *field, int layer)
        （ほかの地図は pre4 のまま余白分手前で止める。ユーザー確認済みの見た目を変えない） */
     int maxpos = g_edgePx > 0 ? g_edgePx - (int)sw : W * 32 - (int)sw - e;
     if (maxpos < 0 && g_edgePx <= 0) return r;   /* 地図が画面より狭いときは、止める線を指定した地図（g_edgePx）だけ止める */
-    int pos = r * 16 / rate, r0 = r;
+    int pos = r * 16 / rate;
     if (pos > maxpos) r = maxpos * rate / 16;
-    static unsigned lastF = 0xffffffffu; static int cnt;
-    if (g_frame - lastF >= (g_curMap == 1912 ? 60u : 120u) || (g_frame == lastF && cnt < 4)) {
-        if (g_frame != lastF) { lastF = g_frame; cnt = 0; }
-        cnt++;
-        LOGI("diag: gspx L%d in %d out %d W %d sw %d rate %d e %d max %d", layer, r0, r, W, (int)sw, rate, e, maxpos);
-    }
     return r;
 }
 
