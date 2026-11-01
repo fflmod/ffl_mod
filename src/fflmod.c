@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.9-pre5"
+#define FFLMOD_VERSION "1.1.9-pre6"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -2600,16 +2600,40 @@ static void hook_EndBtl(void *btl)
 
 /* ---------- v3.07: 戦闘の経験値・ギル・AP を 1.5 倍 ----------
    AddEnemyDropData は敵ごとに「値 × 倍率 ÷ 100」を足す。倍率は GameClass+0x169d4（経験値）/d8（ギル）/dc（AP）、
-   LoadBootData で 100 が入るだけでほかに書く所はない。毎フレーム確かめて 150 にする */
+   LoadBootData で 100 が入るだけでほかに書く所はない。毎フレーム確かめて 150 にする
+   1.1.9-pre6: 倍率はコンフィグ4（ブースト）で 0/0.5/1/1.5/2/3/4 倍から選ぶ。files/fflmod_boost.txt に「経験値 ギル AP」の番号を書く。
+   ファイルがなければ 1.5 倍（今まで通り） */
 #define GAME_RATE_EXP 0x169d4
-#define RATE_EXP 150
-#define RATE_GIL 150
-#define RATE_AP  150
+#define BOOST_FILE "/storage/emulated/0/Android/data/com.square_enix.android_googleplay.ffl_gp/files/fflmod_boost.txt"
+static const int k_boostRate[7] = { 0, 50, 100, 150, 200, 300, 400 };
+static int g_boost[3] = { 3, 3, 3 };
+static int g_boostLoaded;
+static void boost_load(void)
+{
+    g_boostLoaded = 1;
+    int fd = open(BOOST_FILE, 0);
+    if (fd < 0) return;
+    char b[16] = { 0 };
+    int n = (int)read(fd, b, sizeof(b) - 1);
+    close(fd);
+    int k = 0;
+    for (int i = 0; i < n && k < 3; i++) if (b[i] >= '0' && b[i] <= '6') g_boost[k++] = b[i] - '0';
+    LOGI("boost: loaded %d %d %d", k_boostRate[g_boost[0]], k_boostRate[g_boost[1]], k_boostRate[g_boost[2]]);
+}
+static void boost_save(void)
+{
+    int fd = open(BOOST_FILE, 0x241 /* O_WRONLY|O_CREAT|O_TRUNC */, 0660);
+    if (fd < 0) { LOGE("boost: cannot save"); return; }
+    char b[6] = { (char)('0' + g_boost[0]), ' ', (char)('0' + g_boost[1]), ' ', (char)('0' + g_boost[2]), '\n' };
+    if (write(fd, b, 6) != 6) LOGE("boost: write failed");
+    close(fd);
+}
 static void reward_rate_tick(void)
 {
     u8 *gm = (u8 *)game_inst();
     if (!gm) return;
-    static const int want[3] = { RATE_EXP, RATE_GIL, RATE_AP };
+    if (!g_boostLoaded) boost_load();
+    const int want[3] = { k_boostRate[g_boost[0]], k_boostRate[g_boost[1]], k_boostRate[g_boost[2]] };
     for (int k = 0; k < 3; k++) {
         volatile int *r = (volatile int *)(gm + GAME_RATE_EXP + 4 * k);
         if (*r != want[k]) {
@@ -2645,6 +2669,8 @@ static void hook_AddDrop(void *bc, void *act)
             long extra = ((long)base * (r[k] - 100) + 99) / 100;
             long v = (long)acc[k] + extra;
             acc[k] = (int)(v > cap[k] ? cap[k] : v);
+        } else if (base > 0 && r[k] < 100) {   /* 1.1.9-pre6: 0 倍・0.5 倍（切り捨て） */
+            acc[k] = a0[k] + (int)((long)base * r[k] / 100);
         }
     }
 }
@@ -5838,9 +5864,162 @@ static void form_add_bench(void *mc, void *game)
     if (N != lastN) { lastN = N; LOGI("form: %d rows (bench %d)", N, g_formBenchN); }
 }
 
+/* ---------- 1.1.9-pre6: コンフィグ4（ブースト） ----------
+   コンフィグ（MenuClass、ページ mc+0x28 は 0〜2、部品は mc+0xc20 の MenuWidget）に「4」のタブを足し、
+   4ページ目に「獲得経験値・獲得ギル・獲得AP」の3行と、0/0.5/1/1.5/2/3/4 倍の7つのボタンを並べる。
+   4ページ目は、ゲームには3ページ目（mc+0x28=2）として作らせ、InitMenuItemCtrl(2) のあとで3ページ目の行と選択肢
+   （部品番号 0x1a7〜0x1d2 と番号 -1 の行の付属）を外して自分の部品を足す。部品は JobsMenuButton（種類6=選択肢・タブ、7=行）。
+   決定は ConfigFunc のあと widget+0x40==1・+0x44=部品番号で見る。見出し（システムメッセージ 519）と説明（ユーザーメッセージ0、配置 0x1a1）は
+   DrawConfig で差し替える。位置はレイアウトデータ（layout.dat）の3ページ目と同じ並び（行 x2 y74+65*行 636x65、ボタン 46x49） */
+#define OFF_CONFIGF_FUNC 0x4013d0UL
+#define OFF_CONFIGF_GOT  0x460440UL
+#define OFF_DRAWCONF_FUNC 0x40f1d0UL
+#define OFF_DRAWCONF_GOT  0x460620UL
+#define BOOST_TAB   0x7104
+#define BOOST_ROW   0x7110
+#define BOOST_OPT   0x7120          /* + 行*8 + 番号 */
+#define G_SYSMSG    0x4de00         /* GameClass: システムメッセージの表（char* の配列） */
+typedef void (*ConfigFn)(void *mc);
+typedef void (*DrawConfFn)(void *mc, void *g);
+typedef void (*BtnCtorFn)(void *obj, int type, int id, int a, const char *text, int x, int y, int w, int h);
+typedef void (*WItemFn)(void *w, void *item);
+typedef void (*SetUMsgFn)(void *game, int slot, const char *s);
+typedef void (*DrawLDFn)(void *game, int id, int x, int y);
+static ConfigFn g_origConfigF;
+static DrawConfFn g_origDrawConf;
+static BtnCtorFn p_BtnCtor;
+static WItemFn p_WAddItem, p_WRemoveItem;
+static SetUMsgFn p_SetUMsg;
+static DrawLDFn p_DrawLD;
+static int g_boostPage;             /* 1 = 4ページ目を出している（ゲームのページは 2） */
+static const char *const k_boostOpt[7] = { "0", "0.5", "1", "1.5", "2", "3", "4" };
+static const char *const k_boostRowU8[3] = { "獲得経験値", "獲得ギル", "獲得AP" };
+static const char *const k_boostRowSJ[3] = { "\x8a\x6c\x93\xbe\x8c\x6f\x8c\xb1\x92\x6c", "\x8a\x6c\x93\xbe\x83\x4d\x83\x8b", "\x8a\x6c\x93\xbe" "AP" };
+static const char *const k_boostHelpU8[3] = { "戦闘で手に入る経験値の倍率を選べます", "戦闘で手に入るギルの倍率を選べます", "戦闘で手に入るAPの倍率を選べます" };
+static const char *const k_boostHelpSJ[3] = {
+    "\x90\xed\x93\xac\x82\xc5\x8e\xe8\x82\xc9\x93\xfc\x82\xe9\x8c\x6f\x8c\xb1\x92\x6c\x82\xcc\x94\x7b\x97\xa6\x82\xf0\x91\x49\x82\xd7\x82\xdc\x82\xb7",
+    "\x90\xed\x93\xac\x82\xc5\x8e\xe8\x82\xc9\x93\xfc\x82\xe9\x83\x4d\x83\x8b\x82\xcc\x94\x7b\x97\xa6\x82\xf0\x91\x49\x82\xd7\x82\xdc\x82\xb7",
+    "\x90\xed\x93\xac\x82\xc5\x8e\xe8\x82\xc9\x93\xfc\x82\xe9" "AP" "\x82\xcc\x94\x7b\x97\xa6\x82\xf0\x91\x49\x82\xd7\x82\xdc\x82\xb7" };
+static const char k_boostTitleU8[] = "コンフィグ４", k_boostTitleSJ[] = "\x83\x52\x83\x93\x83\x74\x83\x42\x83\x4f\x82\x53";
+
+static int boost_parts_ok(void) { return p_Znwm && p_BtnCtor && p_WAddItem && p_WRemoveItem && p_WGetItem; }
+
+static void *boost_button(void *w, int type, int id, const char *text, int x, int y, int bw, int bh)
+{
+    void *b = p_Znwm(0xc0);
+    if (!b) return 0;
+    p_BtnCtor(b, type, id, -1, text, x, y, bw, bh);
+    *(int *)((u8 *)b + 0x8) = id;
+    p_WAddItem(w, b);
+    return b;
+}
+
+static void boost_set_sel(void *b, int sel)
+{
+    if (!b) return;
+    *((u8 *)b + 0x12) = (u8)(sel != 0);
+    *(int *)((u8 *)b + 0x74) = sel ? -1 : (int)0x808080ffU;
+}
+
+/* InitMenuItemCtrl(2) のあと。タブ4はどのページにも足す。4ページ目なら3ページ目の中身を外して入れ替える */
+static void boost_build(void *mc)
+{
+    void *w = RDP(mc, 0xc20);
+    if (!w || !boost_parts_ok()) return;
+    void *tab3 = p_WGetItem(w, 0x18f);
+    if (!tab3 || p_WGetItem(w, BOOST_TAB)) return;
+    void *game = game_inst();
+    if (game) styx_encoding(game);
+    if (!g_boostLoaded) boost_load();
+    if (RD(int, mc, 0x28) != 2) g_boostPage = 0;
+    void *tab4 = boost_button(w, 6, BOOST_TAB, "4", 224, 341, 64, 40);
+    boost_set_sel(tab4, g_boostPage);
+    if (!g_boostPage) return;
+    boost_set_sel(tab3, 0);
+    /* 行の見た目は3ページ目の行（0x1af）にそろえる */
+    u8 *tmpl = (u8 *)p_WGetItem(w, 0x1af);
+    u8 t18[4] = { 0 }, t70[4] = { 0 }, t80[8] = { 0 }; u8 tb4 = 1, tb7 = 0;
+    if (tmpl) { for (int i = 0; i < 4; i++) { t18[i] = tmpl[0x18 + i]; t70[i] = tmpl[0x70 + i]; } for (int i = 0; i < 8; i++) t80[i] = tmpl[0x80 + i]; tb4 = tmpl[0xb4]; tb7 = tmpl[0xb7]; }
+    void *rm[96]; int nrm = 0;
+    for (u8 *node = *(u8 **)((u8 *)w + 0x20); node && nrm < 96; node = *(u8 **)node) {
+        u8 *it = *(u8 **)(node + 0x10);
+        if (!it) continue;
+        int id = *(int *)(it + 8);
+        if ((id >= 0x1a7 && id <= 0x1d2) || id == -1) rm[nrm++] = it;
+    }
+    for (int i = 0; i < nrm; i++) p_WRemoveItem(w, rm[i]);
+    int sj = g_sjis == 1;
+    for (int r = 0; r < 3; r++) {
+        u8 *row = (u8 *)boost_button(w, 7, BOOST_ROW + r, sj ? k_boostRowSJ[r] : k_boostRowU8[r], 2, 74 + 65 * r, 0x27c, 0x41);
+        if (row && tmpl) { for (int i = 0; i < 4; i++) { row[0x18 + i] = t18[i]; row[0x70 + i] = t70[i]; } for (int i = 0; i < 8; i++) row[0x80 + i] = t80[i]; row[0xb4] = tb4; row[0xb7] = tb7; }
+        for (int k = 0; k < 7; k++) {
+            u8 *b = (u8 *)boost_button(w, 6, BOOST_OPT + r * 8 + k, k_boostOpt[k], 222 + 53 * k, 82 + 65 * r, 46, 49);
+            if (!b) continue;
+            b[0x13] = 1;
+            *(int *)(b + 0x70) = 14;
+            boost_set_sel(b, g_boost[r] == k);
+        }
+    }
+    LOGI("boost: page built (removed %d)", nrm);
+}
+
+static void hook_ConfigF(void *mc)
+{
+    g_origConfigF(mc);
+    void *w = RDP(mc, 0xc20);
+    if (!w || RD(int, w, 0x40) != 1) return;
+    int id = RD(int, w, 0x44);
+    if (id == BOOST_TAB) {
+        if (g_boostPage && RD(int, mc, 0x28) == 2) return;
+        g_boostPage = 1;
+        *(int *)((u8 *)mc + 0x28) = 2;
+        if (g_origRW) hook_RW(mc, 1, 1); else if (p_ResetWidget) p_ResetWidget(mc, 1, 1);
+        return;
+    }
+    if (id >= 0x18d && id <= 0x18f && g_boostPage) {   /* 1〜3 のタブ。ゲームが作り直したあとなので、4ページ目をやめて作り直す */
+        g_boostPage = 0;
+        if (g_origRW) hook_RW(mc, 1, 1); else if (p_ResetWidget) p_ResetWidget(mc, 1, 1);
+        return;
+    }
+    if (g_boostPage && id >= BOOST_OPT && id < BOOST_OPT + 24 && (id - BOOST_OPT) % 8 < 7) {
+        int r = (id - BOOST_OPT) / 8, k = (id - BOOST_OPT) % 8;
+        if (g_boost[r] != k) { g_boost[r] = k; boost_save(); }
+        for (int j = 0; j < 7; j++) boost_set_sel(p_WGetItem(w, BOOST_OPT + r * 8 + j), j == k);
+        LOGI("boost: row %d -> %d%%", r, k_boostRate[k]);
+    }
+}
+
+static void hook_DrawConf(void *mc, void *g)
+{
+    if (!g_boostPage || RD(int, mc, 0x28) != 2) { g_origDrawConf(mc, g); return; }
+    void *game = game_inst();
+    void *w = RDP(mc, 0xc20);
+    int sj = g_sjis == 1, arow = -1;
+    if (w) {
+        u8 *act = *(u8 **)((u8 *)w + 0x8);
+        if (act) {
+            int id = *(int *)(act + 8);
+            if (id >= BOOST_ROW && id < BOOST_ROW + 3) arow = id - BOOST_ROW;
+            if (id >= BOOST_OPT && id < BOOST_OPT + 24) arow = (id - BOOST_OPT) / 8;
+        }
+        if (arow >= 0) for (int r = 0; r < 3; r++) { u8 *row = (u8 *)p_WGetItem(w, BOOST_ROW + r); if (row) row[0xb4] = (u8)(r == arow); }
+    }
+    char **tbl = game ? *(char ***)((u8 *)game + G_SYSMSG) : 0;
+    char *save = tbl ? tbl[519] : 0;
+    if (tbl) tbl[519] = (char *)(sj ? k_boostTitleSJ : k_boostTitleU8);
+    g_origDrawConf(mc, g);
+    if (tbl) tbl[519] = save;
+    if (arow >= 0 && game && p_SetUMsg && p_DrawLD && p_SetColor) {
+        p_SetColor(game, -1);
+        p_SetUMsg(game, 0, sj ? k_boostHelpSJ[arow] : k_boostHelpU8[arow]);
+        p_DrawLD(game, 0x1a1, 0, 0);
+    }
+}
+
 static void hook_IMIC(void *mc, int kind)
 {
     g_origIMIC(mc, kind);
+    if (kind == 2) { boost_build(mc); return; }
     if (kind != 0) return;
     g_formRows = 8;
     g_formBenchN = 0;
@@ -6194,6 +6373,11 @@ void Java_com_square_1enix_android_1googleplay_ffl_1gp_FFLMod_install(void *env,
     p_IsLearnJob = (IsLearnJobFn)dlsym(h, "_ZN9GameClass10IsLearnJobEi");
     p_DrawIcon   = (DrawIconFn)dlsym(h, "_ZN9GameClass8DrawIconEP13MtxGraphics3Diffiiii");
     p_Znwm = (NewFn)dlsym(h, "_Znwm");
+    p_BtnCtor = (BtnCtorFn)dlsym(h, "_ZN14JobsMenuButtonC1EiiiPKciiii");
+    p_WAddItem = (WItemFn)dlsym(h, "_ZN10MenuWidget7AddItemEP8MenuItem");
+    p_WRemoveItem = (WItemFn)dlsym(h, "_ZN10MenuWidget10RemoveItemEP8MenuItem");
+    p_SetUMsg = (SetUMsgFn)dlsym(h, "_ZN9GameClass14SetUserMessageEiPKc");
+    p_DrawLD = (DrawLDFn)dlsym(h, "_ZN9GameClass14DrawLayoutDataEiii");
     p_Znam = (NewFn)dlsym(h, "_Znam");
     p_ZdaPv = (DelArrFn)dlsym(h, "_ZdaPv");
     p_MemberItemCtor = (MemberItemCtorFn)dlsym(h, "_ZN22JobsMenuMemberInfoItemC1EP13MEMBER_STATUSP10MtxAnmCtrliiii");
@@ -6254,6 +6438,8 @@ void Java_com_square_1enix_android_1googleplay_ffl_1gp_FFLMod_install(void *env,
         { OFF_CMP_GOT,      OFF_CMP_FUNC,      (uintptr_t)hook_CMP,        (void **)&g_origCMP,     "CheckMovePass", 0 },
         { OFF_IEDC_GOT,     OFF_IEDC_FUNC,     (uintptr_t)hook_IEDC,       (void **)&g_origIEDC,    "InitEventDataOfChara", 0 },
         { OFF_GSPX_GOT,     OFF_GSPX_FUNC,     (uintptr_t)hook_GSPX,       (void **)&g_origGSPX,    "GetScrollPosX", 0 },
+        { OFF_CONFIGF_GOT,  OFF_CONFIGF_FUNC,  (uintptr_t)hook_ConfigF,    (void **)&g_origConfigF, "ConfigFunc", 0 },
+        { OFF_DRAWCONF_GOT, OFF_DRAWCONF_FUNC, (uintptr_t)hook_DrawConf,   (void **)&g_origDrawConf, "DrawConfig", 0 },
         { OFF_ISORT_GOT,    OFF_ISORT_FUNC,    (uintptr_t)hook_ISort,      (void **)&g_origISort,   "IndexSort", 0 },
         { OFF_LFORM_GOT,    OFF_LFORM_FUNC,    (uintptr_t)hook_LForm,      (void **)&g_origLForm,   "LoadFormation", 0 },
         { OFF_SETML_GOT,    OFF_SETML_FUNC,    (uintptr_t)hook_SetML,      (void **)&g_origSetML,   "SetMemberLevel", 0 },
