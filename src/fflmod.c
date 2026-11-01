@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.7"
+#define FFLMOD_VERSION "1.1.8-pre1"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -3106,18 +3106,30 @@ bad:
 
 /* 1.1.7: ナイト編CDの屋外7マップ（章8 1900〜1913）は、入ったときのイベント（ev0）の命令 0x27「27 03 80 80 80 00 00 01 01 番号 00 00」で
    その番号以降のキャラを半分の明るさで描く（残骸を暗く見せる指定。本編にはない）。残す岩の山が暗く見えるので、色を ff ff ff にする */
+/* 1.1.8: 忍者編CD（章9 1100〜1115）も同じ指定があるが、鎖（絵100）を暗くする行は本編（729/779）にもあるので残し、
+   岩から始まる行だけを ff ff ff にする（マップと番号の組） */
+static const short nj_tint[7][2] = { { 1100, 6 }, { 1103, 6 }, { 1107, 3 }, { 1109, 8 }, { 1111, 3 }, { 1112, 3 }, { 1113, 3 } };
 static void knight_tint(unsigned char *h, int cnt)
 {
-    if (h[0] != 0 || h[1] != 0 || g_curMap < 1900 || g_curMap > 1915) return;
+    if (h[0] != 0 || h[1] != 0) return;
+    int kn = g_curMap >= 1900 && g_curMap <= 1915, nj = g_curMap >= 1100 && g_curMap <= 1115;
+    if (!kn && !nj) return;
     void *game = game_inst();
-    if (!game || RD(int, game, G_CHAPTER) != 8) return;
+    if (!game) return;
+    int ch = RD(int, game, G_CHAPTER);
+    if (!((kn && ch == 8) || (nj && ch == 9))) return;
     unsigned char *q = h + 0x41;
     for (int k = 0; k < cnt; k++, q += 1 + q[0]) {
         unsigned char *L = q + 1;
         if (q[0] == 12 && L[0] == 0x27 && L[1] == 3 && L[2] == 0x80 && L[3] == 0x80 && L[4] == 0x80 &&
             L[5] == 0 && L[6] == 0 && L[7] == 1 && L[8] == 1 && L[10] == 0 && L[11] == 0) {
+            if (nj) {
+                int ok = 0;
+                for (int j = 0; j < 7; j++) if (nj_tint[j][0] == g_curMap && nj_tint[j][1] == L[9]) ok = 1;
+                if (!ok) continue;
+            }
             L[2] = L[3] = L[4] = 0xff;
-            LOGI("map: knight challenge %d tint from event %d removed", g_curMap, L[9]);
+            LOGI("map: %s challenge %d tint from event %d removed", nj ? "ninja" : "knight", g_curMap, L[9]);
         }
     }
 }
@@ -3169,6 +3181,20 @@ static void hook_LoadEv(void *field, unsigned char *data, int off, void *hdrs, v
                     else              { rs[nrep] = moogle_script_9; rlen[nrep] = sizeof(moogle_script_9); rnl[nrep] = MOOGLE_LINES_9; }
                     nrep++;
                 }
+            }
+        }
+        /* 1.1.8: 忍者編CD（章9 1100〜1115）も同じ。左端の行き止まりへの通路をふさぐ岩とその奥の岩16個は残す */
+        if (cnt == 0 && be16(h + 0x2b) == 133 && h[6] == 1 && h[7] == 0 && h[8] == 1 && g_curMap >= 1100 && g_curMap <= 1115) {
+            static const short keep[16][3] = {
+                { 1107, 8, 13 }, { 1107, 1, 11 }, { 1107, 0, 12 }, { 1109, 6, 11 }, { 1109, 2, 10 }, { 1109, 0, 12 },
+                { 1111, 7, 12 }, { 1111, 8, 13 }, { 1111, 5, 11 }, { 1111, 1, 10 }, { 1111, 0, 11 },
+                { 1112, 8, 11 }, { 1112, 4, 10 }, { 1112, 2, 12 }, { 1113, 7, 25 }, { 1113, 8, 24 } };
+            int kp = 0;
+            for (int k = 0; k < 16; k++) if (keep[k][0] == g_curMap && keep[k][1] == h[2] && keep[k][2] == h[3]) kp = 1;
+            void *game = game_inst();
+            if (game && RD(int, game, G_CHAPTER) == 9) {
+                if (!kp) { h[0x2b] = 0; h[0x2c] = 0; h[6] = 0; h[8] = 0; }
+                else { h[0x28] = 7; h[0x29] = 1; h[0x2a] = 1; h[0x36] = 0; }
             }
         }
         /* 1.1.4: ナイト編CD（章8 1900〜1915）の岩の山（絵133、0行、通れない）を消す。絵をなくし、通れるようにする
@@ -3655,15 +3681,108 @@ static const struct { short map; unsigned char layer, x, y; unsigned short old, 
     { 1913, 1, 20, 9, 0x2d, 0x2b },    { 1913, 1, 19, 9, 0x2c, 0x2b },    { 1913, 1, 19, 10, 0x3c, 0x3b },    { 1913, 1, 20, 10, 0x3d, 0x3b },
     { 1914, 0, 6, 3, 0x12d, 0x12b },    { 1914, 0, 5, 3, 0x12c, 0x12b },    { 1914, 0, 5, 4, 0x13c, 0x13b },    { 1914, 0, 6, 4, 0x13d, 0x13b },
 };
+/* 1.1.8: 忍者編CD（章9 1100〜1113）。ナイト編と同じ直し（窓 0xb2→0x38、門の内側、縁の切れ端→0x22、屋外の背景）。表は元の値を確かめる */
+static const struct { short map; unsigned char layer, x, y; unsigned short old, nw; } nj_fix[] = {
+    { 1100, 1, 3, 0, 0xb2, 0x38 },
+    { 1100, 1, 15, 0, 0xb2, 0x38 },
+    { 1100, 1, 8, 1, 0xb2, 0x38 },
+    { 1100, 1, 10, 1, 0xb2, 0x38 },
+    { 1100, 1, 3, 3, 0xb2, 0x38 },
+    { 1100, 1, 8, 3, 0xb2, 0x38 },
+    { 1100, 1, 10, 3, 0xb2, 0x38 },
+    { 1100, 1, 15, 3, 0xb2, 0x38 },
+    { 1100, 1, 8, 5, 0xb2, 0x38 },
+    { 1100, 1, 10, 5, 0xb2, 0x38 },
+    { 1100, 1, 3, 6, 0xb2, 0x38 },
+    { 1100, 1, 15, 6, 0xb2, 0x38 },
+    { 1100, 1, 9, 9, 0x2c, 0x2b },
+    { 1100, 1, 10, 9, 0x2d, 0x2b },
+    { 1100, 1, 9, 10, 0x3c, 0x3b },
+    { 1100, 1, 10, 10, 0x3d, 0x3b },
+    { 1100, 1, 2, 20, 0x12, 0x22 },
+    { 1100, 1, 4, 20, 0x12, 0x22 },
+    { 1100, 1, 16, 20, 0x12, 0x22 },
+    { 1100, 1, 3, 26, 0xb2, 0x38 },
+    { 1100, 1, 15, 26, 0xb2, 0x38 },
+    { 1100, 1, 3, 29, 0xb2, 0x38 },
+    { 1100, 1, 15, 29, 0xb2, 0x38 },
+    { 1100, 1, 3, 32, 0xb2, 0x38 },
+    { 1100, 1, 15, 32, 0xb2, 0x38 },
+    { 1100, 1, 3, 35, 0xb2, 0x38 },
+    { 1100, 1, 15, 35, 0xb2, 0x38 },
+    { 1100, 1, 7, 36, 0xb2, 0x38 },
+    { 1100, 1, 8, 36, 0xb2, 0x38 },
+    { 1100, 1, 10, 36, 0xb2, 0x38 },
+    { 1100, 1, 11, 36, 0xb2, 0x38 },
+    { 1100, 1, 3, 38, 0xb2, 0x38 },
+    { 1100, 1, 15, 38, 0xb2, 0x38 },
+    { 1100, 1, 7, 39, 0xb2, 0x38 },
+    { 1100, 1, 8, 39, 0xb2, 0x38 },
+    { 1100, 1, 10, 39, 0xb2, 0x38 },
+    { 1100, 1, 11, 39, 0xb2, 0x38 },
+    { 1100, 1, 3, 41, 0xb2, 0x38 },
+    { 1100, 1, 15, 41, 0xb2, 0x38 },
+    { 1103, 1, 10, 0, 0xb2, 0x38 },
+    { 1103, 1, 14, 0, 0xb2, 0x38 },
+    { 1103, 1, 2, 1, 0xb2, 0x38 },
+    { 1103, 1, 5, 1, 0xb2, 0x38 },
+    { 1103, 1, 19, 1, 0xb2, 0x38 },
+    { 1103, 1, 22, 1, 0xb2, 0x38 },
+    { 1103, 1, 10, 2, 0xb2, 0x38 },
+    { 1103, 1, 14, 2, 0xb2, 0x38 },
+    { 1103, 1, 2, 6, 0xb2, 0x38 },
+    { 1103, 1, 3, 6, 0xb2, 0x38 },
+    { 1103, 1, 21, 6, 0xb2, 0x38 },
+    { 1103, 1, 22, 6, 0xb2, 0x38 },
+    { 1103, 1, 6, 7, 0xb2, 0x38 },
+    { 1103, 1, 8, 7, 0xb2, 0x38 },
+    { 1103, 1, 16, 7, 0xb2, 0x38 },
+    { 1103, 1, 18, 7, 0xb2, 0x38 },
+    { 1103, 1, 11, 8, 0xb2, 0x38 },
+    { 1103, 1, 13, 8, 0xb2, 0x38 },
+    { 1103, 1, 8, 20, 0x26, 0x22 },
+    { 1103, 1, 10, 20, 0xb2, 0x38 },
+    { 1103, 1, 14, 20, 0xb2, 0x38 },
+    { 1103, 1, 18, 20, 0x26, 0x22 },
+    { 1103, 1, 11, 30, 0xb2, 0x38 },
+    { 1103, 1, 13, 30, 0xb2, 0x38 },
+    { 1103, 1, 8, 31, 0xb2, 0x38 },
+    { 1103, 1, 16, 31, 0xb2, 0x38 },
+    { 1103, 1, 11, 33, 0xb2, 0x38 },
+    { 1103, 1, 13, 33, 0xb2, 0x38 },
+    { 1103, 1, 8, 34, 0xb2, 0x38 },
+    { 1103, 1, 16, 34, 0xb2, 0x38 },
+    { 1107, 1, 17, 10, 0x12, 0x22 },
+    { 1107, 1, 14, 11, 0x12, 0x22 },
+    { 1107, 1, 15, 11, 0x12, 0x22 },
+    { 1109, 1, 2, 45, 0x12, 0x22 },
+    { 1109, 1, 3, 45, 0x12, 0x22 },
+    { 1109, 1, 4, 45, 0x12, 0x22 },
+    { 1111, 1, 8, 4, 0x12, 0x22 },
+    { 1111, 1, 9, 4, 0x12, 0x22 },
+    { 1111, 1, 10, 4, 0x12, 0x22 },
+    { 1111, 1, 0, 8, 0x2d, 0x2b },
+    { 1111, 1, 0, 9, 0x3d, 0x3b },
+    { 1113, 1, 1, 31, 0x12, 0x22 },
+    { 1113, 1, 2, 31, 0x12, 0x22 },
+    { 1113, 1, 3, 31, 0x12, 0x22 },
+    { 1113, 1, 21, 31, 0x12, 0x22 },
+    { 1113, 1, 22, 31, 0x12, 0x22 },
+    { 1113, 1, 23, 31, 0x12, 0x22 },
+};
 static void knight_mapfix(unsigned char *d)
 {
     void *game = game_inst();
-    if (!game || RD(int, game, G_CHAPTER) != 8 || g_curMap < 1900 || g_curMap > 1915) return;
+    if (!game) return;
+    int ch = RD(int, game, G_CHAPTER);
+    int kn = ch == 8 && g_curMap >= 1900 && g_curMap <= 1915, nj = ch == 9 && g_curMap >= 1100 && g_curMap <= 1115;
+    if (!kn && !nj) return;
     int W = be16(d + 4), H = be16(d + 6), nl = d[0x15];
     if (nl < 2 || nl > 8) return;
-    static const short sz[8][3] = { { 1900, 19, 33 }, { 1903, 19, 37 }, { 1907, 35, 45 }, { 1909, 20, 85 }, { 1911, 22, 26 }, { 1912, 14, 23 }, { 1913, 31, 26 }, { 1914, 11, 16 } };
+    static const short sz[15][3] = { { 1900, 19, 33 }, { 1903, 19, 37 }, { 1907, 35, 45 }, { 1909, 20, 85 }, { 1911, 22, 26 }, { 1912, 14, 23 }, { 1913, 31, 26 }, { 1914, 11, 16 },
+        { 1100, 19, 42 }, { 1103, 25, 36 }, { 1107, 34, 33 }, { 1109, 13, 79 }, { 1111, 19, 24 }, { 1112, 15, 39 }, { 1113, 29, 37 } };
     int m = g_curMap, ok = 0;
-    for (int i = 0; i < 8; i++) if (sz[i][0] == m && sz[i][1] == W && sz[i][2] == H) ok = 1;
+    for (int i = 0; i < 15; i++) if (sz[i][0] == m && sz[i][1] == W && sz[i][2] == H) ok = 1;
     if (!ok) return;
     unsigned char *ly = d + 0x16, *p = ly + nl * 7, *ids[8];
     for (int i = 0; i < nl; i++) {
@@ -3674,24 +3793,28 @@ static void knight_mapfix(unsigned char *d)
         if (L[1]) p += W * H;
     }
     int cnt = 0, bad = 0;
-    for (unsigned i = 0; i < sizeof(kn_fix) / sizeof(kn_fix[0]); i++) {
-        if (kn_fix[i].map != m) continue;
-        unsigned char *q = ids[kn_fix[i].layer];
+    unsigned nfix = kn ? sizeof(kn_fix) / sizeof(kn_fix[0]) : sizeof(nj_fix) / sizeof(nj_fix[0]);
+    for (unsigned i = 0; i < nfix; i++) {
+        short fm = kn ? kn_fix[i].map : nj_fix[i].map;
+        unsigned char fl = kn ? kn_fix[i].layer : nj_fix[i].layer, fx = kn ? kn_fix[i].x : nj_fix[i].x, fy = kn ? kn_fix[i].y : nj_fix[i].y;
+        unsigned short fo = kn ? kn_fix[i].old : nj_fix[i].old, fn = kn ? kn_fix[i].nw : nj_fix[i].nw;
+        if (fm != m) continue;
+        unsigned char *q = ids[fl];
         if (!q) { bad++; continue; }
-        q += (kn_fix[i].y * W + kn_fix[i].x) * 2;
+        q += (fy * W + fx) * 2;
         int v = q[0] | q[1] << 8;
-        if (v == kn_fix[i].nw) continue;
-        if (v != kn_fix[i].old) { bad++; continue; }
-        q[0] = (unsigned char)kn_fix[i].nw; q[1] = (unsigned char)(kn_fix[i].nw >> 8); cnt++;
+        if (v == fn) continue;
+        if (v != fo) { bad++; continue; }
+        q[0] = (unsigned char)fn; q[1] = (unsigned char)(fn >> 8); cnt++;
     }
-    if (bad) LOGE("map: knight challenge %d: %d tiles differ, kept", m, bad);
+    if (bad) LOGE("map: %s challenge %d: %d tiles differ, kept", kn ? "knight" : "ninja", m, bad);
     /* 背景：チップの組 30・1（屋外）で、遠景なし・背景のアニメなしのときだけ */
     int bg = 0;
     if (p[6] == 30 && p[8] == 1 && p[7] == 0 && p[9] == 0
         && p[10] == 0 && p[13] == 0 && p[14] == 0 && p[15] == 0) {
         p[13] = 1; p[14] = 4; p[15] = 0; bg = 1;
     }
-    LOGI("map: knight challenge %d fixed (%d, bg %d)", m, cnt, bg);
+    LOGI("map: %s challenge %d fixed (%d, bg %d)", kn ? "knight" : "ninja", m, cnt, bg);
 }
 
 /* v3.34: 吟遊詩人編CDの海（章4 map2）の幽霊船（ev22、層1）。層1は中身のない層なので全部通れる扱いになり島に上がる。
@@ -3751,6 +3874,8 @@ static void hook_IEDC(void *field, unsigned char *h)
         { 7, 1100, 2, 9, 9, 16 },
         /* 1.1.4: ナイト編CD（章8）。乗る仕掛けより1マス半上に見えていた（1.1.5 で 32→48） */
         { 8, 1900, 2, 9, 5, 48 }, { 8, 1914, 4, 8, 6, 48 },
+        /* 1.1.8: 忍者編CD（章9）。絵の位置は乗る仕掛けより3マス下・3マス上。仕掛けのマスに合わせる */
+        { 9, 1100, 2, 9, 33, -112 }, { 9, 1115, 5, 14, 16, 80 },
     };
     int id = be16(h);
     for (unsigned i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
