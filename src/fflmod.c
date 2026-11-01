@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.3"
+#define FFLMOD_VERSION "1.1.4"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -3152,6 +3152,11 @@ static void hook_LoadEv(void *field, unsigned char *data, int off, void *hdrs, v
                 }
             }
         }
+        /* 1.1.4: ナイト編CD（章8 1900〜1915）の岩の山（絵133、0行、通れない）を消す。絵をなくし、通れるようにする */
+        if (cnt == 0 && be16(h + 0x2b) == 133 && h[6] == 1 && h[7] == 0 && h[8] == 1 && g_curMap >= 1900 && g_curMap <= 1915) {
+            void *game = game_inst();
+            if (game && RD(int, game, G_CHAPTER) == 8) { h[0x2b] = 0; h[0x2c] = 0; h[6] = 0; h[8] = 0; }
+        }
         /* 見えない魔法陣を見えるようにする */
         if (be16(h + 0x2b) == 125 && h[7] == 0 && h[0x29] == 0 && h[0x2a] == 0) {
             static const unsigned char circ[8] = { 0, 2, 0, 3, 2, 2, 0, 0 };   /* 本編の魔法陣と同じ向き・動き */
@@ -3556,6 +3561,66 @@ static void dancer_mapfix(unsigned char *d)
     LOGI("map: dancer challenge %d fixed (%d)", m, cnt);
 }
 
+/* 1.1.4: ナイト編のチャレンジダンジョン（章8）の地図
+   - 1900/1903/1907：外壁の窓の位置に置かれた絵のない 0xb2 → 1913 と同じ窓 0x38
+   - 1900/1913/1914：門の右端の絵のない 0x2d → 隣と同じ 0x2c
+   - 1909：戸口の下（層0が空）→ 床 0x1c
+   - 1900/1909/1913：床の真ん中の縁の切れ端（0x12/0x26/0x27）→ 床 0x22
+   地図番号・大きさ・元の値を確かめてから書き換える */
+static const struct { short map; unsigned char layer, x, y; unsigned short old, nw; } kn_fix[] = {
+    { 1900, 1, 8, 7, 0x12, 0x22 },    { 1900, 1, 9, 7, 0x12, 0x22 },    { 1900, 1, 10, 7, 0x12, 0x22 },
+    { 1900, 1, 7, 8, 0x26, 0x22 },    { 1900, 1, 11, 8, 0x27, 0x22 },    { 1900, 1, 5, 10, 0x12, 0x22 },
+    { 1900, 1, 6, 10, 0x26, 0x22 },    { 1900, 1, 12, 10, 0x27, 0x22 },    { 1900, 1, 13, 10, 0x12, 0x22 },
+    { 1900, 1, 3, 11, 0x12, 0x22 },    { 1900, 1, 4, 11, 0x26, 0x22 },    { 1900, 1, 14, 11, 0x27, 0x22 },
+    { 1900, 1, 15, 11, 0x12, 0x22 },    { 1900, 1, 8, 15, 0xb2, 0x38 },    { 1900, 1, 10, 15, 0xb2, 0x38 },
+    { 1900, 1, 10, 18, 0x2d, 0x2c },    { 1903, 1, 8, 5, 0xb2, 0x38 },    { 1903, 1, 10, 5, 0xb2, 0x38 },
+    { 1903, 1, 4, 6, 0xb2, 0x38 },    { 1903, 1, 14, 6, 0xb2, 0x38 },    { 1903, 1, 8, 7, 0xb2, 0x38 },
+    { 1903, 1, 10, 7, 0xb2, 0x38 },    { 1903, 1, 1, 28, 0xb2, 0x38 },    { 1903, 1, 17, 28, 0xb2, 0x38 },
+    { 1903, 1, 4, 31, 0xb2, 0x38 },    { 1903, 1, 14, 31, 0xb2, 0x38 },    { 1903, 1, 7, 32, 0xb2, 0x38 },
+    { 1903, 1, 11, 32, 0xb2, 0x38 },    { 1907, 1, 18, 3, 0xb2, 0x38 },    { 1907, 1, 20, 3, 0xb2, 0x38 },
+    { 1907, 1, 13, 4, 0xb2, 0x38 },    { 1907, 1, 15, 4, 0xb2, 0x38 },    { 1907, 1, 23, 4, 0xb2, 0x38 },
+    { 1907, 1, 25, 4, 0xb2, 0x38 },    { 1907, 1, 18, 5, 0xb2, 0x38 },    { 1907, 1, 20, 5, 0xb2, 0x38 },
+    { 1907, 1, 18, 7, 0xb2, 0x38 },    { 1907, 1, 20, 7, 0xb2, 0x38 },    { 1907, 1, 13, 8, 0xb2, 0x38 },
+    { 1907, 1, 15, 8, 0xb2, 0x38 },    { 1907, 1, 23, 8, 0xb2, 0x38 },    { 1907, 1, 25, 8, 0xb2, 0x38 },
+    { 1909, 1, 8, 45, 0x12, 0x22 },    { 1909, 1, 9, 45, 0x12, 0x22 },    { 1909, 1, 10, 45, 0x12, 0x22 },
+    { 1909, 0, 9, 51, 0x0, 0x1c },    { 1909, 1, 19, 69, 0x12, 0x22 },    { 1909, 0, 19, 76, 0x0, 0x1c },
+    { 1913, 1, 8, 5, 0x12, 0x22 },    { 1913, 1, 9, 5, 0x12, 0x22 },    { 1913, 1, 10, 5, 0x12, 0x22 },
+    { 1913, 1, 28, 5, 0x12, 0x22 },    { 1913, 1, 29, 5, 0x12, 0x22 },    { 1913, 1, 30, 5, 0x12, 0x22 },
+    { 1913, 1, 20, 9, 0x2d, 0x2c },    { 1914, 0, 6, 3, 0x12d, 0x12c },
+};
+static void knight_mapfix(unsigned char *d)
+{
+    void *game = game_inst();
+    if (!game || RD(int, game, G_CHAPTER) != 8 || g_curMap < 1900 || g_curMap > 1915) return;
+    int W = be16(d + 4), H = be16(d + 6), nl = d[0x15];
+    if (nl < 2 || nl > 8) return;
+    static const short sz[6][3] = { { 1900, 19, 33 }, { 1903, 19, 37 }, { 1907, 35, 45 }, { 1909, 20, 85 }, { 1913, 31, 26 }, { 1914, 11, 16 } };
+    int m = g_curMap, ok = 0;
+    for (int i = 0; i < 6; i++) if (sz[i][0] == m && sz[i][1] == W && sz[i][2] == H) ok = 1;
+    if (!ok) return;
+    unsigned char *ly = d + 0x16, *p = ly + nl * 7, *ids[8];
+    for (int i = 0; i < nl; i++) {
+        unsigned char *L = ly + i * 7;
+        if (!L[0]) { ids[i] = 0; continue; }
+        ids[i] = p; p += W * H * 2;
+        if (L[2]) p += W * H;
+        if (L[1]) p += W * H;
+    }
+    int cnt = 0, bad = 0;
+    for (unsigned i = 0; i < sizeof(kn_fix) / sizeof(kn_fix[0]); i++) {
+        if (kn_fix[i].map != m) continue;
+        unsigned char *q = ids[kn_fix[i].layer];
+        if (!q) { bad++; continue; }
+        q += (kn_fix[i].y * W + kn_fix[i].x) * 2;
+        int v = q[0] | q[1] << 8;
+        if (v == kn_fix[i].nw) continue;
+        if (v != kn_fix[i].old) { bad++; continue; }
+        q[0] = (unsigned char)kn_fix[i].nw; q[1] = (unsigned char)(kn_fix[i].nw >> 8); cnt++;
+    }
+    if (bad) LOGE("map: knight challenge %d: %d tiles differ, kept", m, bad);
+    LOGI("map: knight challenge %d fixed (%d)", m, cnt);
+}
+
 /* v3.34: 吟遊詩人編CDの海（章4 map2）の幽霊船（ev22、層1）。層1は中身のない層なので全部通れる扱いになり島に上がる。
    CheckMovePass(field, chara, layer, x, y, dx, dy)：0=通れる 1=地形 2=キャラ。幽霊船だけ、行き先の層0が
    海（capk の属性 (a>>16)&0xff==0x3c、組0のチップ）でなければ 1 にする */
@@ -3606,11 +3671,13 @@ static void hook_IEDC(void *field, unsigned char *h)
     void *game = game_inst();
     if (!game) return;
     int ch = RD(int, game, G_CHAPTER);
-    static const struct { short ch, map, ev, x, y; } k[] = {
-        { 4, 2000, 7, 8, 3 }, { 6, 2000, 4, 4, 6 }, { 6, 2014, 4, 7, 6 }, { 6, 2020, 4, 8, 16 },
+    static const struct { short ch, map, ev, x, y, dy; } k[] = {
+        { 4, 2000, 7, 8, 3, 16 }, { 6, 2000, 4, 4, 6, 16 }, { 6, 2014, 4, 7, 6, 16 }, { 6, 2020, 4, 8, 16, 16 },
         /* v3.40t: 暗黒騎士編CD（章5）と踊り子編CD（章7） */
-        { 5, 2000, 4, 5, 7 }, { 5, 2010, 3, 8, 14 }, { 5, 2010, 5, 4, 14 }, { 5, 2020, 3, 8, 14 },
-        { 7, 1100, 2, 9, 9 },
+        { 5, 2000, 4, 5, 7, 16 }, { 5, 2010, 3, 8, 14, 16 }, { 5, 2010, 5, 4, 14, 16 }, { 5, 2020, 3, 8, 14, 16 },
+        { 7, 1100, 2, 9, 9, 16 },
+        /* 1.1.4: ナイト編CD（章8）。乗る仕掛けより1マス上に見えていた */
+        { 8, 1900, 2, 9, 5, 32 }, { 8, 1914, 4, 8, 6, 32 },
     };
     int id = be16(h);
     for (unsigned i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
@@ -3619,7 +3686,7 @@ static void hook_IEDC(void *field, unsigned char *h)
         for (int j = 0; j < 64; j++, c += 0xc8) {
             if (*(int *)c != id) continue;
             int *py = (int *)(c + 0x58);
-            if (*py == (h[3] + h[0x3a]) * 32 + 16) { *py += 16; }
+            if (*py == (h[3] + h[0x3a]) * 32 + 16) { *py += k[i].dy; }
             break;
         }
         break;
@@ -3806,6 +3873,7 @@ static void hook_LoadMI(void *field, unsigned char *data, int off)
     dk_mapfix(d);
     mem_mapfix(d);
     dancer_mapfix(d);
+    knight_mapfix(d);
     g_origLoadMI(field, data, off);
     /* v3.50: メモリスト編CDの砂漠 2006（40x40）・2010（44x43）だけ、画面をマップの端で止める。
        field+0xdc32（地図情報の3つ目の bool、LoadMapInfo が毎回入れる）が1なら GetScrollPosX/Y・GetScrollPosition が
