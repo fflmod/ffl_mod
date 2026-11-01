@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.9-pre3"
+#define FFLMOD_VERSION "1.1.9-pre4"
 static int g_curMap = -1;
 static unsigned long long g_chainMask;   /* 1.1.9-pre3: 忍者編CDの鎖のキャラの枠（0〜63）。地図が変わったら消す */
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
@@ -3538,8 +3538,10 @@ typedef void (*LoadMapFn)(void *field, int map, int layer, int x, int y, int dir
 static LoadMapFn g_origLoadMap;
 static void hook_LoadMap(void *field, int map, int layer, int x, int y, int dir, int resume)
 {
+    /* 1.1.9-pre3: 共通イベントの読み込みでは消さないよう、地図を読むときに消す
+       1.1.9-pre4: 戦闘から同じ地図へ戻るときはキャラを作り直さず前の状態を戻すので、別の地図へ移るときだけ消す */
+    if (map != g_curMap) g_chainMask = 0;
     g_curMap = map;
-    g_chainMask = 0;   /* 1.1.9-pre3: 共通イベントの読み込みでは消さないよう、地図を読むときに消す */
     g_origLoadMap(field, map, layer, x, y, dir, resume);
     slow_magic_apply();
 }
@@ -3923,7 +3925,7 @@ static IedcFn g_origIEDC;
 /* 1.1.9: 忍者編CDの鎖（絵100）は、登り降りする列（命令0x7a のイベントの列）と絵がずれて見える。
    スクショで測ったずれを、描く位置（+0x54 画素x・+0x58 画素y）で直す（マップ、イベントの列 x、足す画素 x・y）
    1.1.9-pre2: 1103・1112・1115 の下の鎖は1マス下、1114 は5マス下（ユーザー） */
-static const short nj_chain[6][4] = { { 1103, 8, -16, 32 }, { 1103, 18, -16, 32 }, { 1112, 12, -16, 32 },
+static const short nj_chain[6][4] = { { 1103, 8, -16, 32 }, { 1103, 18, -16, 32 }, { 1112, 12, -16, 64 },
                                       { 1114, 6, 16, 160 }, { 1115, 7, 32, 32 }, { 1115, 8, 16, 32 } };
 static void *g_fieldp;   /* 1.1.9-pre2: 直近の FieldClass（hook_IndexSort で使う） */
 static void hook_IEDC(void *field, unsigned char *h)
@@ -4169,9 +4171,10 @@ static int hook_GSPX(void *field, int layer)
     /* 1.1.7-pre7: field+0xc（682）はワイドの余白込みの幅。g_edgePx の地図は余白を引かずに右端ぴったりで止める
        （ほかの地図は pre4 のまま余白分手前で止める。ユーザー確認済みの見た目を変えない） */
     if (g_edgeL) {   /* 1.1.9: 左端。画面の左端が地図の左端を越えないように
-                        1.1.9-pre2: 見える範囲は [pos, pos+sw+e]。pre1 は e で止めて左が 22px 切れた（ナイト編の pre6 と同じ誤り）→ 0 */
+                        1.1.9-pre2: 見える範囲は [pos, pos+sw+e]。pre1 は e で止めて左が 22px 切れた（ナイト編の pre6 と同じ誤り）→ 0
+                        1.1.9-pre4: 左右両方を止める地図（1113）のため、右も止めるときは続けて見る */
         if (r < 0) r = 0;
-        return r;
+        if (!g_edgeR) return r;
     }
     int maxpos = g_edgePx > 0 ? g_edgePx - (int)sw : W * 32 - (int)sw - e;
     if (maxpos < 0 && g_edgePx <= 0) return r;   /* 地図が画面より狭いときは、止める線を指定した地図（g_edgePx）だけ止める */
@@ -4236,15 +4239,18 @@ static void hook_LoadMI(void *field, unsigned char *data, int off)
             ((g_curMap == 2006 && W == 40 && H == 40) || (g_curMap == 2010 && W == 44 && H == 43)))
             *(volatile unsigned char *)((uintptr_t)field + 0xdc32) = 1;
         /* 1.1.7: ナイト編CD 1907（35x45）・1911（22x26）・1912（14x23）・1913（31x26）だけ、画面の右端をマップの右端で止める（hook_GSPX） */
-        if (off == 0) g_edgeR = (game && RD(int, game, G_CHAPTER) == 8 &&
+        if (off == 0) g_edgeR = (game && ((RD(int, game, G_CHAPTER) == 8 &&
                                  ((g_curMap == 1907 && W == 35 && H == 45) || (g_curMap == 1911 && W == 22 && H == 26) ||
-                                  (g_curMap == 1913 && W == 31 && H == 26) || (g_curMap == 1912 && W == 14 && H == 23)));
+                                  (g_curMap == 1913 && W == 31 && H == 26) || (g_curMap == 1912 && W == 14 && H == 23))) ||
+                                 /* 1.1.9-pre4: 忍者編CD 1113（29x37）は右端の塔も途中で切れているので右も止める（左は g_edgeL） */
+                                 (RD(int, game, G_CHAPTER) == 9 && g_curMap == 1113 && W == 29 && H == 37)));
         /* 1.1.7: 1912（幅14、画面より狭い）は、右端（岩 (13,13) の右側）が画面の右端を越えないように止める */
         if (off == 0) g_edgePx = (g_edgeR && g_curMap == 1912) ? 14 * 32 : 0;
         /* 1.1.9: 忍者編CD 1107（34x33）・1111（19x24）は左端が建物の途中で切れているので、画面の左端を地図の左端で止める */
         if (off == 0) g_edgeL = (game && RD(int, game, G_CHAPTER) == 9 &&
                                  ((g_curMap == 1107 && W == 34 && H == 33) || (g_curMap == 1111 && W == 19 && H == 24) ||
-                                  (g_curMap == 1112 && W == 15 && H == 39)));   /* 1.1.9-pre3: 1112 も */
+                                  (g_curMap == 1112 && W == 15 && H == 39) ||   /* 1.1.9-pre3: 1112 も */
+                                  (g_curMap == 1113 && W == 29 && H == 37)));   /* 1.1.9-pre4: 1113 も（右も止める） */
     }
 }
 
