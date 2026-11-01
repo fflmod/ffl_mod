@@ -44,9 +44,8 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.9-pre4"
+#define FFLMOD_VERSION "1.1.9-pre5"
 static int g_curMap = -1;
-static unsigned long long g_chainMask;   /* 1.1.9-pre3: 忍者編CDの鎖のキャラの枠（0〜63）。地図が変わったら消す */
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
 /* libjniproxy.so (ffl_gp 1.2.0, arm64-v8a) 内の位置。基準は KeyState のシンボル。
@@ -3538,9 +3537,6 @@ typedef void (*LoadMapFn)(void *field, int map, int layer, int x, int y, int dir
 static LoadMapFn g_origLoadMap;
 static void hook_LoadMap(void *field, int map, int layer, int x, int y, int dir, int resume)
 {
-    /* 1.1.9-pre3: 共通イベントの読み込みでは消さないよう、地図を読むときに消す
-       1.1.9-pre4: 戦闘から同じ地図へ戻るときはキャラを作り直さず前の状態を戻すので、別の地図へ移るときだけ消す */
-    if (map != g_curMap) g_chainMask = 0;
     g_curMap = map;
     g_origLoadMap(field, map, layer, x, y, dir, resume);
     slow_magic_apply();
@@ -3922,68 +3918,69 @@ static int hook_CMP(void *field, int *ch, int layer, int x, int y, int dx, int d
 #define OFF_IEDC_GOT  0x45f680UL
 typedef void (*IedcFn)(void *field, unsigned char *h);
 static IedcFn g_origIEDC;
-/* 1.1.9: 忍者編CDの鎖（絵100）は、登り降りする列（命令0x7a のイベントの列）と絵がずれて見える。
-   スクショで測ったずれを、描く位置（+0x54 画素x・+0x58 画素y）で直す（マップ、イベントの列 x、足す画素 x・y）
-   1.1.9-pre2: 1103・1112・1115 の下の鎖は1マス下、1114 は5マス下（ユーザー） */
-static const short nj_chain[6][4] = { { 1103, 8, -16, 32 }, { 1103, 18, -16, 32 }, { 1112, 12, -16, 64 },
-                                      { 1114, 6, 16, 160 }, { 1115, 7, 32, 32 }, { 1115, 8, 16, 32 } };
-static void *g_fieldp;   /* 1.1.9-pre2: 直近の FieldClass（hook_IndexSort で使う） */
+/* CD の魔法陣（絵125）の描く位置のずれ（章、マップ、イベント、マス x・y、足す画素 y）。v3.35〜1.1.9 で足してきた表 */
+static const struct { short ch, map, ev, x, y, dy; } circ_fix[] = {
+    { 4, 2000, 7, 8, 3, 16 }, { 6, 2000, 4, 4, 6, 16 }, { 6, 2014, 4, 7, 6, 16 }, { 6, 2020, 4, 8, 16, 16 },
+    /* v3.40t: 暗黒騎士編CD（章5）と踊り子編CD（章7） */
+    { 5, 2000, 4, 5, 7, 16 }, { 5, 2010, 3, 8, 14, 16 }, { 5, 2010, 5, 4, 14, 16 }, { 5, 2020, 3, 8, 14, 16 },
+    { 7, 1100, 2, 9, 9, 16 },
+    /* 1.1.4: ナイト編CD（章8）。乗る仕掛けより1マス半上に見えていた（1.1.5 で 32→48） */
+    { 8, 1900, 2, 9, 5, 48 }, { 8, 1914, 4, 8, 6, 48 },
+    /* 1.1.8: 忍者編CD（章9）。1.1.9: 入口は -112→-48、ボスの部屋は 80→48（ユーザーのスクショ） */
+    { 9, 1100, 2, 9, 33, -48 }, { 9, 1115, 5, 14, 16, 48 },
+};
+/* 1.1.9: 忍者編CDの鎖（絵100）。登り降りする列（命令0x7a のイベントの列）と絵がずれて見えるので、描く位置（+0x54 x・+0x58 y）を直す
+   （マップ、イベント番号の範囲、マス x、足す画素 x・y）。1.1.9-pre2〜4: 下げ幅はユーザーのスクショで決めた
+   鎖はすべて、並べ順でキャラより先にする（hook_ISort）。dx・dy が 0 の行は並べ順だけ */
+static const struct { short map, lo, hi, x, dx, dy; } nj_chain[] = {
+    { 1103, 9, 16, 8, -16, 32 }, { 1103, 17, 24, 18, -16, 32 }, { 1109, 12, 26, 9, 0, 0 }, { 1112, 9, 27, 12, -16, 64 },
+    { 1113, 12, 26, 28, 0, 0 }, { 1114, 2, 8, 6, 16, 160 }, { 1115, 7, 19, 7, 32, 32 }, { 1115, 24, 33, 8, 16, 32 },
+};
+static void *g_fieldp;   /* 1.1.9-pre2: 直近の FieldClass（hook_ISort で使う。IEDC と GetScrollPosX で覚える） */
+/* 1.1.9-pre5: 位置の直しは、キャラを作るとき（InitEventDataOfChara）だけでなく毎フレーム確かめる。
+   戦闘のあとや中断からの再開では、キャラを作り直さず保存した状態を戻すので、作るときの直しが効かないため。
+   キャラの枠（field+0xc68 + j*0xc8）：+0 イベント番号、+0x8 層、+0xc マス x、+0x10 マス y、+0x54/+0x58 描く画素 x・y（元はマス*32+16）。
+   元の位置のときだけ足すので、何度呼んでも二重には足さない。戻り値は鎖の枠のビット（並べ順に使う） */
+static unsigned long long chara_fix(void *field)
+{
+    void *game = game_inst();
+    if (!game || !field) return 0;
+    int ch = RD(int, game, G_CHAPTER), map = g_curMap;
+    int nj = ch == 9 && map >= 1100 && map <= 1115;
+    int anyc = 0;
+    for (unsigned i = 0; i < sizeof(circ_fix) / sizeof(circ_fix[0]); i++) if (circ_fix[i].ch == ch && circ_fix[i].map == map) anyc = 1;
+    if (!nj && !anyc) return 0;
+    unsigned long long mask = 0;
+    unsigned char *c = (unsigned char *)field + 0xc68;
+    for (int j = 0; j < 64; j++, c += 0xc8) {
+        int id = *(int *)c, tx = *(int *)(c + 0xc), ty = *(int *)(c + 0x10);
+        int *px = (int *)(c + 0x54), *py = (int *)(c + 0x58);
+        if (nj) {
+            for (unsigned i = 0; i < sizeof(nj_chain) / sizeof(nj_chain[0]); i++) {
+                if (nj_chain[i].map != map || id < nj_chain[i].lo || id > nj_chain[i].hi || tx != nj_chain[i].x) continue;
+                mask |= 1ULL << j;
+                if (*px == tx * 32 + 16 && nj_chain[i].dx) *px += nj_chain[i].dx;
+                if (*py == ty * 32 + 16 && nj_chain[i].dy) *py += nj_chain[i].dy;
+                break;
+            }
+        }
+        if (anyc) {
+            for (unsigned i = 0; i < sizeof(circ_fix) / sizeof(circ_fix[0]); i++) {
+                if (circ_fix[i].ch != ch || circ_fix[i].map != map || circ_fix[i].ev != id || circ_fix[i].x != tx || circ_fix[i].y != ty) continue;
+                if (*py == ty * 32 + 16) *py += circ_fix[i].dy;
+                break;
+            }
+        }
+    }
+    return mask;
+}
 static void hook_IEDC(void *field, unsigned char *h)
 {
     g_origIEDC(field, h);
     g_fieldp = field;
     if (!h) return;
-    if (be16(h + 0x2b) == 100 && g_curMap >= 1100 && g_curMap <= 1115) {
-        void *game = game_inst();
-        if (!game || RD(int, game, G_CHAPTER) != 9) return;
-        int dx = 0, dy = 0, hit = 0;
-        for (int i = 0; i < 6; i++) if (nj_chain[i][0] == g_curMap && nj_chain[i][1] == h[2]) { dx = nj_chain[i][2]; dy = nj_chain[i][3]; hit = 1; }
-        int id = be16(h);
-        {   /* 1.1.9-pre3: 忍者編CDの鎖はすべて、並べ順でキャラより先にする（hook_ISort） */
-            unsigned char *cc = (unsigned char *)field + 0xc68;
-            for (int j = 0; j < 64; j++, cc += 0xc8) if (*(int *)cc == id) { g_chainMask |= 1ULL << j; break; }
-        }
-        if (!hit) return;
-        unsigned char *c = (unsigned char *)field + 0xc68;
-        for (int j = 0; j < 64; j++, c += 0xc8) {
-            if (*(int *)c != id) continue;
-            int *px = (int *)(c + 0x54);
-            static int told;
-            int *py = (int *)(c + 0x58);
-            if (told < 8) { told++; LOGI("map: ninja challenge %d chain %d at (%d,%d) x %d y %d +(%d,%d)", g_curMap, id, h[2], h[3], *px, *py, dx, dy); }
-            *px += dx; *py += dy;
-            break;
-        }
-        return;
-    }
-    if (be16(h + 0x2b) != 125) return;
-    void *game = game_inst();
-    if (!game) return;
-    int ch = RD(int, game, G_CHAPTER);
-    static const struct { short ch, map, ev, x, y, dy; } k[] = {
-        { 4, 2000, 7, 8, 3, 16 }, { 6, 2000, 4, 4, 6, 16 }, { 6, 2014, 4, 7, 6, 16 }, { 6, 2020, 4, 8, 16, 16 },
-        /* v3.40t: 暗黒騎士編CD（章5）と踊り子編CD（章7） */
-        { 5, 2000, 4, 5, 7, 16 }, { 5, 2010, 3, 8, 14, 16 }, { 5, 2010, 5, 4, 14, 16 }, { 5, 2020, 3, 8, 14, 16 },
-        { 7, 1100, 2, 9, 9, 16 },
-        /* 1.1.4: ナイト編CD（章8）。乗る仕掛けより1マス半上に見えていた（1.1.5 で 32→48） */
-        { 8, 1900, 2, 9, 5, 48 }, { 8, 1914, 4, 8, 6, 48 },
-        /* 1.1.8: 忍者編CD（章9）。絵の位置は乗る仕掛けより3マス下・3マス上。仕掛けのマスに合わせる
-           1.1.9: 1.1.8 では入口が2マス上・ボスの部屋が1マス下に出た（ユーザーのスクショ）→ -112→-48、80→48 */
-        { 9, 1100, 2, 9, 33, -48 }, { 9, 1115, 5, 14, 16, 48 },
-    };
-    int id = be16(h);
-    for (unsigned i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
-        if (k[i].ch != ch || k[i].map != g_curMap || k[i].ev != id || k[i].x != h[2] || k[i].y != h[3]) continue;
-        unsigned char *c = (unsigned char *)field + 0xc68;
-        for (int j = 0; j < 64; j++, c += 0xc8) {
-            if (*(int *)c != id) continue;
-            int *py = (int *)(c + 0x58);
-            if (*py == (h[3] + h[0x3a]) * 32 + 16) { *py += k[i].dy; if (ch == 9) LOGI("map: ninja challenge %d circle %d y %d", g_curMap, id, *py); }
-            else if (ch == 9) LOGE("map: ninja challenge %d circle %d y %d differs", g_curMap, id, *py);
-            break;
-        }
-        break;
-    }
+    int pic = be16(h + 0x2b);
+    if (pic == 100 || pic == 125) chara_fix(field);
 }
 
 /* v3.45: 暗黒騎士編CD（章5 マップ2000〜2099）の左上の枠を出さない。
@@ -4141,15 +4138,15 @@ typedef void (*ISortFn)(void *game, int *keys, int n, int *idx, int m, int asc);
 static ISortFn g_origISort;
 static void hook_ISort(void *game, int *keys, int n, int *idx, int m, int asc)
 {
-    if (g_chainMask && g_curMap >= 1100 && g_curMap <= 1115 && g_fieldp && keys && idx && n > 0 && n <= 0x144) {
-        void *gm = game_inst();
-        if (gm && RD(int, gm, G_CHAPTER) == 9) {
+    unsigned long long mask = (g_fieldp && keys && idx && n > 0 && n <= 0x144) ? chara_fix(g_fieldp) : 0;
+    if (mask) {
+        {
             for (int k = 0; k < n; k++) {
                 int v = idx[k];
                 if (v < 0 || (v & 0xff000000) != 0x1000000) continue;
                 int j = v & 0xffffff;
                 if (j >= 64) continue;
-                if (g_chainMask >> j & 1) keys[k] -= 0x1000;
+                if (mask >> j & 1) keys[k] -= 0x1000;
             }
         }
     }
@@ -4159,6 +4156,7 @@ static void hook_ISort(void *game, int *keys, int n, int *idx, int m, int asc)
 static int hook_GSPX(void *field, int layer)
 {
     int r = g_origGSPX(field, layer);
+    if (field) g_fieldp = field;   /* 1.1.9-pre5: 中断からの再開では IEDC を通らないので、ここでも覚える */
     if ((!g_edgeR && !g_edgeL) || !field) return r;
     unsigned char *m = (unsigned char *)field + 0xdc18;
     int W = *(int *)m;
