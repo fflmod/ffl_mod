@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.7-pre4"
+#define FFLMOD_VERSION "1.1.7-pre5"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -3876,6 +3876,7 @@ static void hook_SetML(void *field, int member, int level, int flag)
 typedef int (*GspxFn)(void *field, int layer);
 static GspxFn g_origGSPX;
 static int g_edgeR;
+static int g_edgePx;   /* 止める線（地図の左からの画素）。1907 は岩 (32,32) の右側 33×32 */
 static int hook_GSPX(void *field, int layer)
 {
     int r = g_origGSPX(field, layer);
@@ -3888,17 +3889,55 @@ static int hook_GSPX(void *field, int layer)
     if (rate <= 0) return r;
     float sw = *(float *)((unsigned char *)field + 0xc);
     int e = (int)(g_wideE + 0.999f);
-    int maxpos = W * 32 - (int)sw - e;
+    int maxpos = (g_edgePx > 0 ? g_edgePx : W * 32) - (int)sw - e;
     if (maxpos < 0) return r;
     int pos = r * 16 / rate, r0 = r;
     if (pos > maxpos) r = maxpos * rate / 16;
     static unsigned lastF = 0xffffffffu; static int cnt;
-    if (g_frame - lastF >= 120 || (g_frame == lastF && cnt < 4)) {
+    if (g_frame - lastF >= (g_curMap == 1907 ? 60u : 120u) || (g_frame == lastF && cnt < 4)) {
         if (g_frame != lastF) { lastF = g_frame; cnt = 0; }
         cnt++;
         LOGI("diag: gspx L%d in %d out %d W %d sw %d rate %d e %d max %d", layer, r0, r, W, (int)sw, rate, e, maxpos);
     }
     return r;
+}
+
+
+/* 1.1.7-pre5 試験版：1907 で、毎秒1フレーム分、地図（層1）と主人公（125）を描いた位置と、層の構造の値をログに出す */
+#define OFF_DCH2_FUNC 0x3c0340UL
+#define OFF_DCH2_GOT  0x45f810UL
+#define OFF_DMC_FUNC  0x3bf1dcUL
+#define OFF_DMC_GOT   0x45f7e8UL
+typedef void (*Dch2Fn)(void *field, void *g, int *ch, int a, int b, int c, int d, int e, void *mtx);
+typedef void (*DmcFn)(void *field, void *g, int layer, int a, int b);
+static Dch2Fn g_origDch2;
+static DmcFn g_origDmc;
+static unsigned g_camF = 0xffffffffu;
+static int cam_on(void)
+{
+    if (g_curMap != 1907 || !g_edgeR) return 0;
+    if (g_camF == g_frame) return 1;
+    if (g_camF == 0xffffffffu || g_frame - g_camF >= 60) { g_camF = g_frame; return 1; }
+    return 0;
+}
+static void hook_Dmc(void *field, void *g, int layer, int a, int b)
+{
+    if (cam_on() && field) {
+        int *ls = (int *)((unsigned char *)field + 0xdba8);
+        int *L = *(int **)ls ? (int *)(*(unsigned char **)ls + layer * 48) : 0;
+        if (L) LOGI("diag: cam f%u chips L%d %d %d | %d %d %d %d %d %d %d %d %d %d %d %d | fw %d fh %d", g_frame, layer, a, b,
+                    L[0], L[1], L[2], L[3], L[4], L[5], L[6], L[7], L[8], L[9], L[10], L[11],
+                    (int)*(float *)((unsigned char *)field + 0xc), (int)*(float *)((unsigned char *)field + 0x10));
+    }
+    g_origDmc(field, g, layer, a, b);
+}
+static void hook_Dch2(void *field, void *g, int *ch, int a, int b, int c, int d, int e, void *mtx)
+{
+    if (ch && ch[0] == 125 && cam_on()) {
+        const float *mv = (const float *)((unsigned char *)g + 0x1c);
+        LOGI("diag: cam f%u player px %d %d args %d %d mv %d %d", g_frame, ch[0x15], ch[0x16], a, b, (int)mv[12], (int)mv[13]);
+    }
+    g_origDch2(field, g, ch, a, b, c, d, e, mtx);
 }
 
 static void hook_LoadMI(void *field, unsigned char *data, int off)
@@ -3959,6 +3998,7 @@ static void hook_LoadMI(void *field, unsigned char *data, int off)
         if (off == 0) g_edgeR = (game && RD(int, game, G_CHAPTER) == 8 &&
                                  ((g_curMap == 1907 && W == 35 && H == 45) || (g_curMap == 1911 && W == 22 && H == 26) ||
                                   (g_curMap == 1913 && W == 31 && H == 26)));
+        if (off == 0) g_edgePx = (g_edgeR && g_curMap == 1907) ? 33 * 32 : 0;
     }
 }
 
@@ -5964,6 +6004,8 @@ void Java_com_square_1enix_android_1googleplay_ffl_1gp_FFLMod_install(void *env,
         { OFF_CMP_GOT,      OFF_CMP_FUNC,      (uintptr_t)hook_CMP,        (void **)&g_origCMP,     "CheckMovePass", 0 },
         { OFF_IEDC_GOT,     OFF_IEDC_FUNC,     (uintptr_t)hook_IEDC,       (void **)&g_origIEDC,    "InitEventDataOfChara", 0 },
         { OFF_GSPX_GOT,     OFF_GSPX_FUNC,     (uintptr_t)hook_GSPX,       (void **)&g_origGSPX,    "GetScrollPosX", 0 },
+        { OFF_DCH2_GOT,     OFF_DCH2_FUNC,     (uintptr_t)hook_Dch2,       (void **)&g_origDch2,    "DrawChara2", 0 },
+        { OFF_DMC_GOT,      OFF_DMC_FUNC,      (uintptr_t)hook_Dmc,        (void **)&g_origDmc,     "DrawMapChips", 0 },
         { OFF_LFORM_GOT,    OFF_LFORM_FUNC,    (uintptr_t)hook_LForm,      (void **)&g_origLForm,   "LoadFormation", 0 },
         { OFF_SETML_GOT,    OFF_SETML_FUNC,    (uintptr_t)hook_SetML,      (void **)&g_origSetML,   "SetMemberLevel", 0 },
         { OFF_LEVELUP_GOT,  OFF_LEVELUP_FUNC,  (uintptr_t)hook_LevelUp,    (void **)&g_origLevelUp, "LevelUp", 0 },
