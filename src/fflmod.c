@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.5"
+#define FFLMOD_VERSION "1.1.6"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -3162,7 +3162,11 @@ static void hook_LoadEv(void *field, unsigned char *data, int off, void *hdrs, v
             int kp = 0;
             for (int k = 0; k < 14; k++) if (keep[k][0] == g_curMap && keep[k][1] == h[2] && keep[k][2] == h[3]) kp = 1;
             void *game = game_inst();
-            if (!kp && game && RD(int, game, G_CHAPTER) == 8) { h[0x2b] = 0; h[0x2c] = 0; h[6] = 0; h[8] = 0; }
+            if (game && RD(int, game, G_CHAPTER) == 8) {
+                if (!kp) { h[0x2b] = 0; h[0x2c] = 0; h[6] = 0; h[8] = 0; }
+                /* 1.1.6: 残す岩は本編の岩と同じ1枚絵の設定に（CD だけ 02 02 02・向き1 で、絵が細かく切られて小石に見えた） */
+                else { h[0x28] = 7; h[0x29] = 1; h[0x2a] = 1; h[0x36] = 0; }
+            }
         }
         /* 見えない魔法陣を見えるようにする */
         if (be16(h + 0x2b) == 125 && h[7] == 0 && h[0x29] == 0 && h[0x2a] == 0) {
@@ -3604,9 +3608,9 @@ static void knight_mapfix(unsigned char *d)
     if (!game || RD(int, game, G_CHAPTER) != 8 || g_curMap < 1900 || g_curMap > 1915) return;
     int W = be16(d + 4), H = be16(d + 6), nl = d[0x15];
     if (nl < 2 || nl > 8) return;
-    static const short sz[8][3] = { { 1900, 19, 33 }, { 1903, 19, 37 }, { 1907, 35, 45 }, { 1909, 20, 85 }, { 1911, 22, 26 }, { 1912, 14, 23 }, { 1913, 31, 26 }, { 1914, 11, 16 } };
+    static const short sz[9][3] = { { 1900, 19, 33 }, { 1903, 19, 37 }, { 1907, 35, 45 }, { 1909, 20, 85 }, { 1911, 22, 26 }, { 1912, 14, 23 }, { 1913, 31, 26 }, { 1914, 11, 16 }, { 1915, 19, 39 } };
     int m = g_curMap, ok = 0;
-    for (int i = 0; i < 8; i++) if (sz[i][0] == m && sz[i][1] == W && sz[i][2] == H) ok = 1;
+    for (int i = 0; i < 9; i++) if (sz[i][0] == m && sz[i][1] == W && sz[i][2] == H) ok = 1;
     if (!ok) return;
     unsigned char *ly = d + 0x16, *p = ly + nl * 7, *ids[8];
     for (int i = 0; i < nl; i++) {
@@ -3628,9 +3632,10 @@ static void knight_mapfix(unsigned char *d)
         q[0] = (unsigned char)kn_fix[i].nw; q[1] = (unsigned char)(kn_fix[i].nw >> 8); cnt++;
     }
     if (bad) LOGE("map: knight challenge %d: %d tiles differ, kept", m, bad);
-    /* 背景：チップの組 30・1（屋外）で、遠景なし・背景のアニメなしのときだけ */
+    /* 背景：チップの組 30・1（屋外）と、1.1.6 からボスの部屋 1915（組 17・30）。遠景なし・背景のアニメなしのときだけ */
     int bg = 0;
-    if (p[6] == 30 && p[7] == 0 && p[8] == 1 && p[9] == 0 && p[10] == 0 && p[13] == 0 && p[14] == 0 && p[15] == 0) {
+    if (((p[6] == 30 && p[8] == 1) || (m == 1915 && p[6] == 17 && p[8] == 30)) && p[7] == 0 && p[9] == 0
+        && p[10] == 0 && p[13] == 0 && p[14] == 0 && p[15] == 0) {
         p[13] = 1; p[14] = 4; p[15] = 0; bg = 1;
     }
     LOGI("map: knight challenge %d fixed (%d, bg %d)", m, cnt, bg);
@@ -3898,6 +3903,13 @@ static void hook_LoadMI(void *field, unsigned char *data, int off)
         if (off == 0 && game && RD(int, game, G_CHAPTER) == 6 &&
             ((g_curMap == 2006 && W == 40 && H == 40) || (g_curMap == 2010 && W == 44 && H == 43)))
             *(volatile unsigned char *)((uintptr_t)field + 0xdc32) = 1;
+        /* 1.1.6: ナイト編CDの屋外7マップも画面をマップの端で止める（右が切れた城の断面を映さない。画面より狭い向きは真ん中に固定） */
+        static const short kc[7][3] = { { 1900, 19, 33 }, { 1903, 19, 37 }, { 1907, 35, 45 }, { 1909, 20, 85 },
+                                        { 1911, 22, 26 }, { 1912, 14, 23 }, { 1913, 31, 26 } };
+        if (off == 0 && game && RD(int, game, G_CHAPTER) == 8)
+            for (int i = 0; i < 7; i++)
+                if (kc[i][0] == g_curMap && kc[i][1] == W && kc[i][2] == H)
+                    *(volatile unsigned char *)((uintptr_t)field + 0xdc32) = 1;
     }
 }
 
