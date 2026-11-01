@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.7-pre2"
+#define FFLMOD_VERSION "1.1.7-pre3"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -3599,10 +3599,6 @@ static const struct { short map; unsigned char layer, x, y; unsigned short old, 
     { 1909, 0, 9, 51, 0x0, 0x1c },    { 1909, 1, 19, 69, 0x12, 0x22 },    { 1909, 0, 19, 76, 0x0, 0x1c },
     { 1913, 1, 8, 5, 0x12, 0x22 },    { 1913, 1, 9, 5, 0x12, 0x22 },    { 1913, 1, 10, 5, 0x12, 0x22 },
     { 1913, 1, 28, 5, 0x12, 0x22 },    { 1913, 1, 29, 5, 0x12, 0x22 },    { 1913, 1, 30, 5, 0x12, 0x22 },
-    /* 1.1.7: 残す岩の下の背景用の層（層0、組1＝世界地図のタイル。画面には何も出ない）を空に。
-       属性 0x50009900 の「下を半透明で描く」印で、岩が暗く描かれていた */
-    { 1907, 0, 26, 33, 0x1a9, 0 },    { 1907, 0, 32, 32, 0x1c9, 0 },
-    { 1913, 0, 20, 12, 0x1ac, 0 },    { 1913, 0, 21, 11, 0x1a0, 0 },    { 1913, 0, 25, 12, 0x1b9, 0 },    { 1913, 0, 27, 13, 0x1d6, 0 },
     { 1913, 1, 20, 9, 0x2d, 0x2b },    { 1913, 1, 19, 9, 0x2c, 0x2b },    { 1913, 1, 19, 10, 0x3c, 0x3b },    { 1913, 1, 20, 10, 0x3d, 0x3b },
     { 1914, 0, 6, 3, 0x12d, 0x12b },    { 1914, 0, 5, 3, 0x12c, 0x12b },    { 1914, 0, 5, 4, 0x13c, 0x13b },    { 1914, 0, 6, 4, 0x13d, 0x13b },
 };
@@ -3886,7 +3882,7 @@ static int hook_GSPX(void *field, int layer)
     return r;
 }
 
-/* 1.1.7 試験版：ナイト編CD 1909/1913 の描く順と岩・主人公の描き方をログに出す（240 フレームに1回、1フレーム分、地図ごとに10回まで） */
+/* 1.1.7 試験版：ナイト編CD 1907/1909/1913 の描く順と岩・主人公の描き方をログに出す（240 フレームに1回、1フレーム分、地図ごとに10回まで） */
 #define OFF_DCH1_FUNC 0x3bfed0UL
 #define OFF_DCH1_GOT  0x45f7e0UL
 #define OFF_DCH2_FUNC 0x3c0340UL
@@ -3986,9 +3982,11 @@ static void hook_LoadMI(void *field, unsigned char *data, int off)
         if (off == 0 && game && RD(int, game, G_CHAPTER) == 6 &&
             ((g_curMap == 2006 && W == 40 && H == 40) || (g_curMap == 2010 && W == 44 && H == 43)))
             *(volatile unsigned char *)((uintptr_t)field + 0xdc32) = 1;
-        /* 1.1.7: ナイト編CD 1913（31x26）だけ、画面の右端をマップの右端で止める（hook_GSPX） */
-        if (off == 0) g_edgeR = (game && RD(int, game, G_CHAPTER) == 8 && g_curMap == 1913 && W == 31 && H == 26);
-        if (off == 0) g_diagMap = (game && RD(int, game, G_CHAPTER) == 8 && (g_curMap == 1913 || g_curMap == 1909)) ? g_curMap : 0;
+        /* 1.1.7: ナイト編CD 1907（35x45）と 1913（31x26）だけ、画面の右端をマップの右端で止める（hook_GSPX） */
+        if (off == 0) g_edgeR = (game && RD(int, game, G_CHAPTER) == 8 &&
+                                 ((g_curMap == 1907 && W == 35 && H == 45) || (g_curMap == 1913 && W == 31 && H == 26)));
+        if (off == 0) g_diagMap = (game && RD(int, game, G_CHAPTER) == 8 &&
+                                   (g_curMap == 1907 || g_curMap == 1909 || g_curMap == 1913)) ? g_curMap : 0;
         if (off == 0) { g_diagN = 0; g_diagFrame = 0xffffffffu; }
     }
 }
