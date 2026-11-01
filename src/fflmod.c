@@ -3768,7 +3768,6 @@ static const struct { short map; unsigned char layer, x, y; unsigned short old, 
     { 1111, 1, 10, 4, 0x12, 0x22 },
     { 1111, 1, 0, 8, 0x2d, 0x2b },
     { 1111, 1, 0, 9, 0x3d, 0x3b },
-    { 1111, 1, 4, 10, 0x20, 0x22 },    /* 1.1.9: 柱の右下の影のかけら → 床 */
     { 1113, 1, 1, 31, 0x12, 0x22 },
     { 1113, 1, 2, 31, 0x12, 0x22 },
     { 1113, 1, 3, 31, 0x12, 0x22 },
@@ -3868,7 +3867,7 @@ typedef void (*IedcFn)(void *field, unsigned char *h);
 static IedcFn g_origIEDC;
 /* 1.1.9: 忍者編CDの鎖（絵100）は、登り降りする列（命令0x7a のイベントの列）と絵がずれて見える。
    スクショで測ったずれを、描く位置（+0x54 画素x）で列の真ん中に合わせる（マップ、イベントの列 x、足す画素） */
-static const short nj_chain[6][3] = { { 1103, 8, -16 }, { 1103, 18, -16 }, { 1112, 12, -16 }, { 1114, 6, 16 }, { 1115, 7, 32 }, { 1115, 8, 16 } };
+static const short nj_chain[5][3] = { { 1103, 8, -16 }, { 1103, 18, -16 }, { 1114, 6, 16 }, { 1115, 7, 32 }, { 1115, 8, 16 } };
 static void hook_IEDC(void *field, unsigned char *h)
 {
     g_origIEDC(field, h);
@@ -3877,7 +3876,7 @@ static void hook_IEDC(void *field, unsigned char *h)
         void *game = game_inst();
         if (!game || RD(int, game, G_CHAPTER) != 9) return;
         int dx = 0;
-        for (int i = 0; i < 6; i++) if (nj_chain[i][0] == g_curMap && nj_chain[i][1] == h[2]) dx = nj_chain[i][2];
+        for (int i = 0; i < 5; i++) if (nj_chain[i][0] == g_curMap && nj_chain[i][1] == h[2]) dx = nj_chain[i][2];
         if (!dx) return;
         int id = be16(h);
         unsigned char *c = (unsigned char *)field + 0xc68;
@@ -4065,7 +4064,7 @@ static void hook_SetML(void *field, int member, int level, int flag)
 typedef int (*GspxFn)(void *field, int layer);
 static GspxFn g_origGSPX;
 static int g_edgeR;
-static int g_edgeL;    /* 1.1.9: 左端で止める地図（忍者編CD 1107） */
+static int g_edgeL;    /* 1.1.9: 左端で止める地図（忍者編CD 1107・1111） */
 static int g_edgePx;   /* 止める線（地図の左からの画素）。0 なら地図の右端。地図が画面より狭くても止めるのはこれを指定した地図だけ */
 static int hook_GSPX(void *field, int layer)
 {
@@ -4154,8 +4153,9 @@ static void hook_LoadMI(void *field, unsigned char *data, int off)
                                   (g_curMap == 1913 && W == 31 && H == 26) || (g_curMap == 1912 && W == 14 && H == 23)));
         /* 1.1.7: 1912（幅14、画面より狭い）は、右端（岩 (13,13) の右側）が画面の右端を越えないように止める */
         if (off == 0) g_edgePx = (g_edgeR && g_curMap == 1912) ? 14 * 32 : 0;
-        /* 1.1.9: 忍者編CD 1107（34x33）は左端が建物の途中で切れているので、画面の左端を地図の左端で止める */
-        if (off == 0) g_edgeL = (game && RD(int, game, G_CHAPTER) == 9 && g_curMap == 1107 && W == 34 && H == 33);
+        /* 1.1.9: 忍者編CD 1107（34x33）・1111（19x24）は左端が建物の途中で切れているので、画面の左端を地図の左端で止める */
+        if (off == 0) g_edgeL = (game && RD(int, game, G_CHAPTER) == 9 &&
+                                 ((g_curMap == 1107 && W == 34 && H == 33) || (g_curMap == 1111 && W == 19 && H == 24)));
     }
 }
 
