@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.7-pre6"
+#define FFLMOD_VERSION "1.1.7-pre7"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -3923,7 +3923,9 @@ static int hook_GSPX(void *field, int layer)
     if (rate <= 0) return r;
     float sw = *(float *)((unsigned char *)field + 0xc);
     int e = (int)(g_wideE + 0.999f);
-    int maxpos = (g_edgePx > 0 ? g_edgePx : W * 32) - (int)sw - e;
+    /* 1.1.7-pre7: field+0xc（682）はワイドの余白込みの幅。g_edgePx の地図は余白を引かずに右端ぴったりで止める
+       （ほかの地図は pre4 のまま余白分手前で止める。ユーザー確認済みの見た目を変えない） */
+    int maxpos = g_edgePx > 0 ? g_edgePx - (int)sw : W * 32 - (int)sw - e;
     if (maxpos < 0 && g_edgePx <= 0) return r;   /* 地図が画面より狭いときは、止める線を指定した地図（g_edgePx）だけ止める */
     int pos = r * 16 / rate, r0 = r;
     if (pos > maxpos) r = maxpos * rate / 16;
