@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.6"
+#define FFLMOD_VERSION "1.1.7-pre1"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -3608,9 +3608,9 @@ static void knight_mapfix(unsigned char *d)
     if (!game || RD(int, game, G_CHAPTER) != 8 || g_curMap < 1900 || g_curMap > 1915) return;
     int W = be16(d + 4), H = be16(d + 6), nl = d[0x15];
     if (nl < 2 || nl > 8) return;
-    static const short sz[9][3] = { { 1900, 19, 33 }, { 1903, 19, 37 }, { 1907, 35, 45 }, { 1909, 20, 85 }, { 1911, 22, 26 }, { 1912, 14, 23 }, { 1913, 31, 26 }, { 1914, 11, 16 }, { 1915, 19, 39 } };
+    static const short sz[8][3] = { { 1900, 19, 33 }, { 1903, 19, 37 }, { 1907, 35, 45 }, { 1909, 20, 85 }, { 1911, 22, 26 }, { 1912, 14, 23 }, { 1913, 31, 26 }, { 1914, 11, 16 } };
     int m = g_curMap, ok = 0;
-    for (int i = 0; i < 9; i++) if (sz[i][0] == m && sz[i][1] == W && sz[i][2] == H) ok = 1;
+    for (int i = 0; i < 8; i++) if (sz[i][0] == m && sz[i][1] == W && sz[i][2] == H) ok = 1;
     if (!ok) return;
     unsigned char *ly = d + 0x16, *p = ly + nl * 7, *ids[8];
     for (int i = 0; i < nl; i++) {
@@ -3632,9 +3632,9 @@ static void knight_mapfix(unsigned char *d)
         q[0] = (unsigned char)kn_fix[i].nw; q[1] = (unsigned char)(kn_fix[i].nw >> 8); cnt++;
     }
     if (bad) LOGE("map: knight challenge %d: %d tiles differ, kept", m, bad);
-    /* 背景：チップの組 30・1（屋外）と、1.1.6 からボスの部屋 1915（組 17・30）。遠景なし・背景のアニメなしのときだけ */
+    /* 背景：チップの組 30・1（屋外）で、遠景なし・背景のアニメなしのときだけ */
     int bg = 0;
-    if (((p[6] == 30 && p[8] == 1) || (m == 1915 && p[6] == 17 && p[8] == 30)) && p[7] == 0 && p[9] == 0
+    if (p[6] == 30 && p[8] == 1 && p[7] == 0 && p[9] == 0
         && p[10] == 0 && p[13] == 0 && p[14] == 0 && p[15] == 0) {
         p[13] = 1; p[14] = 4; p[15] = 0; bg = 1;
     }
@@ -3849,6 +3849,79 @@ static void hook_SetML(void *field, int member, int level, int flag)
     }
 }
 
+
+/* 1.1.7: 画面の右端（GetScrollPosX 0x3c8af0）。ゲームは 640 幅で 0〜(幅−画面)×32 に収めるが、ワイド表示は左右に g_wideE ずつ広く描く。
+   g_edgeR のときだけ、右端がワイドの余白も含めて地図の右端を越えないようにする。層ごとの流れる速さ（層+8、16が等速）で割り戻して比べる */
+#define OFF_GSPX_FUNC 0x3c8af0UL
+#define OFF_GSPX_GOT  0x45fa68UL
+typedef int (*GspxFn)(void *field, int layer);
+static GspxFn g_origGSPX;
+static int g_edgeR;
+static int hook_GSPX(void *field, int layer)
+{
+    int r = g_origGSPX(field, layer);
+    if (!g_edgeR || !field) return r;
+    unsigned char *m = (unsigned char *)field + 0xdc18;
+    int W = *(int *)m;
+    unsigned char *ls = *(unsigned char **)(m + 0x28);
+    if (!ls || layer < 0 || layer > 7) return r;
+    int rate = *(int *)(ls + layer * 40 + 8);
+    if (rate <= 0) return r;
+    float sw = *(float *)((unsigned char *)field + 0xc);
+    int e = (int)(g_wideE + 0.999f);
+    int maxpos = W * 32 - (int)sw - e;
+    if (maxpos < 0) return r;
+    int pos = r * 16 / rate;
+    if (pos > maxpos) r = maxpos * rate / 16;
+    return r;
+}
+
+/* 1.1.7 試験版：ナイト編CD 1909/1913 の描く順と岩・主人公の描き方をログに出す（240 フレームに1回、1フレーム分、地図ごとに10回まで） */
+#define OFF_DCH1_FUNC 0x3bfed0UL
+#define OFF_DCH1_GOT  0x45f7e0UL
+#define OFF_DCH2_FUNC 0x3c0340UL
+#define OFF_DCH2_GOT  0x45f810UL
+#define OFF_DMC_FUNC  0x3bf1dcUL
+#define OFF_DMC_GOT   0x45f7e8UL
+typedef void (*Dch1Fn)(void *field, void *g, int *ch, void *mtx);
+typedef void (*Dch2Fn)(void *field, void *g, int *ch, int a, int b, int c, int d, int e, void *mtx);
+typedef void (*DmcFn)(void *field, void *g, int layer, int a, int b);
+static Dch1Fn g_origDch1;
+static Dch2Fn g_origDch2;
+static DmcFn g_origDmc;
+static int g_diagMap, g_diagN;
+static unsigned g_diagFrame = 0xffffffffu;
+static int diag_on(void)
+{
+    if (!g_diagMap || g_diagN >= 10) return 0;
+    if (g_diagFrame == g_frame) return 1;
+    if (g_frame % 240 == 0) { g_diagFrame = g_frame; g_diagN++; LOGI("diag: map %d frame %u", g_diagMap, g_frame); return 1; }
+    return 0;
+}
+static void hook_Dmc(void *field, void *g, int layer, int a, int b)
+{
+    if (diag_on()) LOGI("diag: chips L%d %d %d", layer, a, b);
+    g_origDmc(field, g, layer, a, b);
+}
+static void hook_Dch1(void *field, void *g, int *ch, void *mtx)
+{
+    if (diag_on() && ch)
+        LOGI("diag: chara id %d xy %d %d L%d +48 %x +50 %d +54 %d +58 %d +6c %d +34 %d +38 %d",
+             ch[0], ch[2], ch[3], ch[4], ch[0x12], ch[0x14], ch[0x15], ch[0x16], ch[0x1b], ch[0xd], ch[0xe]);
+    g_origDch1(field, g, ch, mtx);
+}
+static void hook_Dch2(void *field, void *g, int *ch, int a, int b, int c, int d, int e, void *mtx)
+{
+    int on = diag_on() && ch;
+    g_origDch2(field, g, ch, a, b, c, d, e, mtx);
+    if (on) {
+        unsigned char *ac = (unsigned char *)field + ch[0x14] * 0xf0;
+        LOGI("diag:  draw id %d args %d %d %d %d %d col %08x %08x %08x %08x %08x %08x",
+             ch[0], a, b, c, d, e, *(unsigned *)(ac + 0x3ec0), *(unsigned *)(ac + 0x3ec4), *(unsigned *)(ac + 0x3ec8),
+             *(unsigned *)(ac + 0x3ecc), *(unsigned *)(ac + 0x3ed0), *(unsigned *)(ac + 0x3ed4));
+    }
+}
+
 static void hook_LoadMI(void *field, unsigned char *data, int off)
 {
     unsigned char *d = data + off;
@@ -3903,13 +3976,10 @@ static void hook_LoadMI(void *field, unsigned char *data, int off)
         if (off == 0 && game && RD(int, game, G_CHAPTER) == 6 &&
             ((g_curMap == 2006 && W == 40 && H == 40) || (g_curMap == 2010 && W == 44 && H == 43)))
             *(volatile unsigned char *)((uintptr_t)field + 0xdc32) = 1;
-        /* 1.1.6: ナイト編CDの屋外7マップも画面をマップの端で止める（右が切れた城の断面を映さない。画面より狭い向きは真ん中に固定） */
-        static const short kc[7][3] = { { 1900, 19, 33 }, { 1903, 19, 37 }, { 1907, 35, 45 }, { 1909, 20, 85 },
-                                        { 1911, 22, 26 }, { 1912, 14, 23 }, { 1913, 31, 26 } };
-        if (off == 0 && game && RD(int, game, G_CHAPTER) == 8)
-            for (int i = 0; i < 7; i++)
-                if (kc[i][0] == g_curMap && kc[i][1] == W && kc[i][2] == H)
-                    *(volatile unsigned char *)((uintptr_t)field + 0xdc32) = 1;
+        /* 1.1.7: ナイト編CD 1913（31x26）だけ、画面の右端をマップの右端で止める（hook_GSPX） */
+        if (off == 0) g_edgeR = (game && RD(int, game, G_CHAPTER) == 8 && g_curMap == 1913 && W == 31 && H == 26);
+        if (off == 0) g_diagMap = (game && RD(int, game, G_CHAPTER) == 8 && (g_curMap == 1913 || g_curMap == 1909)) ? g_curMap : 0;
+        if (off == 0) g_diagN = 0;
     }
 }
 
@@ -5914,6 +5984,10 @@ void Java_com_square_1enix_android_1googleplay_ffl_1gp_FFLMod_install(void *env,
         { OFF_LOADMAP_GOT,  OFF_LOADMAP_FUNC,  (uintptr_t)hook_LoadMap,    (void **)&g_origLoadMap, "LoadMap", 0 },
         { OFF_CMP_GOT,      OFF_CMP_FUNC,      (uintptr_t)hook_CMP,        (void **)&g_origCMP,     "CheckMovePass", 0 },
         { OFF_IEDC_GOT,     OFF_IEDC_FUNC,     (uintptr_t)hook_IEDC,       (void **)&g_origIEDC,    "InitEventDataOfChara", 0 },
+        { OFF_GSPX_GOT,     OFF_GSPX_FUNC,     (uintptr_t)hook_GSPX,       (void **)&g_origGSPX,    "GetScrollPosX", 0 },
+        { OFF_DCH1_GOT,     OFF_DCH1_FUNC,     (uintptr_t)hook_Dch1,       (void **)&g_origDch1,    "DrawChara1", 0 },
+        { OFF_DCH2_GOT,     OFF_DCH2_FUNC,     (uintptr_t)hook_Dch2,       (void **)&g_origDch2,    "DrawChara2", 0 },
+        { OFF_DMC_GOT,      OFF_DMC_FUNC,      (uintptr_t)hook_Dmc,        (void **)&g_origDmc,     "DrawMapChips", 0 },
         { OFF_LFORM_GOT,    OFF_LFORM_FUNC,    (uintptr_t)hook_LForm,      (void **)&g_origLForm,   "LoadFormation", 0 },
         { OFF_SETML_GOT,    OFF_SETML_FUNC,    (uintptr_t)hook_SetML,      (void **)&g_origSetML,   "SetMemberLevel", 0 },
         { OFF_LEVELUP_GOT,  OFF_LEVELUP_FUNC,  (uintptr_t)hook_LevelUp,    (void **)&g_origLevelUp, "LevelUp", 0 },
