@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.8"
+#define FFLMOD_VERSION "1.1.9-pre1"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -3183,6 +3183,11 @@ static void hook_LoadEv(void *field, unsigned char *data, int off, void *hdrs, v
                 }
             }
         }
+        /* 1.1.9: 忍者編CD 1104（屋内）の鎖（絵100、登り降りの仕掛けがない）を消す */
+        if (cnt == 0 && be16(h + 0x2b) == 100 && g_curMap == 1104) {
+            void *game = game_inst();
+            if (game && RD(int, game, G_CHAPTER) == 9) { h[0x2b] = 0; h[0x2c] = 0; }
+        }
         /* 1.1.8: 忍者編CD（章9 1100〜1115）も同じ。左端の行き止まりへの通路をふさぐ岩とその奥の岩16個は残す */
         if (cnt == 0 && be16(h + 0x2b) == 133 && h[6] == 1 && h[7] == 0 && h[8] == 1 && g_curMap >= 1100 && g_curMap <= 1115) {
             static const short keep[16][3] = {
@@ -3763,6 +3768,7 @@ static const struct { short map; unsigned char layer, x, y; unsigned short old, 
     { 1111, 1, 10, 4, 0x12, 0x22 },
     { 1111, 1, 0, 8, 0x2d, 0x2b },
     { 1111, 1, 0, 9, 0x3d, 0x3b },
+    { 1111, 1, 4, 10, 0x20, 0x22 },    /* 1.1.9: 柱の右下の影のかけら → 床 */
     { 1113, 1, 1, 31, 0x12, 0x22 },
     { 1113, 1, 2, 31, 0x12, 0x22 },
     { 1113, 1, 3, 31, 0x12, 0x22 },
@@ -3860,10 +3866,32 @@ static int hook_CMP(void *field, int *ch, int layer, int x, int y, int dx, int d
 #define OFF_IEDC_GOT  0x45f680UL
 typedef void (*IedcFn)(void *field, unsigned char *h);
 static IedcFn g_origIEDC;
+/* 1.1.9: 忍者編CDの鎖（絵100）は、登り降りする列（命令0x7a のイベントの列）と絵がずれて見える。
+   スクショで測ったずれを、描く位置（+0x54 画素x）で列の真ん中に合わせる（マップ、イベントの列 x、足す画素） */
+static const short nj_chain[6][3] = { { 1103, 8, -16 }, { 1103, 18, -16 }, { 1112, 12, -16 }, { 1114, 6, 16 }, { 1115, 7, 32 }, { 1115, 8, 16 } };
 static void hook_IEDC(void *field, unsigned char *h)
 {
     g_origIEDC(field, h);
-    if (!h || be16(h + 0x2b) != 125) return;
+    if (!h) return;
+    if (be16(h + 0x2b) == 100 && g_curMap >= 1100 && g_curMap <= 1115) {
+        void *game = game_inst();
+        if (!game || RD(int, game, G_CHAPTER) != 9) return;
+        int dx = 0;
+        for (int i = 0; i < 6; i++) if (nj_chain[i][0] == g_curMap && nj_chain[i][1] == h[2]) dx = nj_chain[i][2];
+        if (!dx) return;
+        int id = be16(h);
+        unsigned char *c = (unsigned char *)field + 0xc68;
+        for (int j = 0; j < 64; j++, c += 0xc8) {
+            if (*(int *)c != id) continue;
+            int *px = (int *)(c + 0x54);
+            static int told;
+            if (told < 8) { told++; LOGI("map: ninja challenge %d chain %d at (%d,%d) x %d -> %d", g_curMap, id, h[2], h[3], *px, *px + dx); }
+            *px += dx;
+            break;
+        }
+        return;
+    }
+    if (be16(h + 0x2b) != 125) return;
     void *game = game_inst();
     if (!game) return;
     int ch = RD(int, game, G_CHAPTER);
@@ -3874,8 +3902,9 @@ static void hook_IEDC(void *field, unsigned char *h)
         { 7, 1100, 2, 9, 9, 16 },
         /* 1.1.4: ナイト編CD（章8）。乗る仕掛けより1マス半上に見えていた（1.1.5 で 32→48） */
         { 8, 1900, 2, 9, 5, 48 }, { 8, 1914, 4, 8, 6, 48 },
-        /* 1.1.8: 忍者編CD（章9）。絵の位置は乗る仕掛けより3マス下・3マス上。仕掛けのマスに合わせる */
-        { 9, 1100, 2, 9, 33, -112 }, { 9, 1115, 5, 14, 16, 80 },
+        /* 1.1.8: 忍者編CD（章9）。絵の位置は乗る仕掛けより3マス下・3マス上。仕掛けのマスに合わせる
+           1.1.9: 1.1.8 では入口が2マス上・ボスの部屋が1マス下に出た（ユーザーのスクショ）→ -112→-48、80→48 */
+        { 9, 1100, 2, 9, 33, -48 }, { 9, 1115, 5, 14, 16, 48 },
     };
     int id = be16(h);
     for (unsigned i = 0; i < sizeof(k) / sizeof(k[0]); i++) {
@@ -3884,7 +3913,8 @@ static void hook_IEDC(void *field, unsigned char *h)
         for (int j = 0; j < 64; j++, c += 0xc8) {
             if (*(int *)c != id) continue;
             int *py = (int *)(c + 0x58);
-            if (*py == (h[3] + h[0x3a]) * 32 + 16) { *py += k[i].dy; }
+            if (*py == (h[3] + h[0x3a]) * 32 + 16) { *py += k[i].dy; if (ch == 9) LOGI("map: ninja challenge %d circle %d y %d", g_curMap, id, *py); }
+            else if (ch == 9) LOGE("map: ninja challenge %d circle %d y %d differs", g_curMap, id, *py);
             break;
         }
         break;
@@ -4035,11 +4065,12 @@ static void hook_SetML(void *field, int member, int level, int flag)
 typedef int (*GspxFn)(void *field, int layer);
 static GspxFn g_origGSPX;
 static int g_edgeR;
+static int g_edgeL;    /* 1.1.9: 左端で止める地図（忍者編CD 1107） */
 static int g_edgePx;   /* 止める線（地図の左からの画素）。0 なら地図の右端。地図が画面より狭くても止めるのはこれを指定した地図だけ */
 static int hook_GSPX(void *field, int layer)
 {
     int r = g_origGSPX(field, layer);
-    if (!g_edgeR || !field) return r;
+    if ((!g_edgeR && !g_edgeL) || !field) return r;
     unsigned char *m = (unsigned char *)field + 0xdc18;
     int W = *(int *)m;
     unsigned char *ls = *(unsigned char **)(m + 0x28);
@@ -4050,6 +4081,11 @@ static int hook_GSPX(void *field, int layer)
     int e = (int)(g_wideE + 0.999f);
     /* 1.1.7-pre7: field+0xc（682）はワイドの余白込みの幅。g_edgePx の地図は余白を引かずに右端ぴったりで止める
        （ほかの地図は pre4 のまま余白分手前で止める。ユーザー確認済みの見た目を変えない） */
+    if (g_edgeL) {   /* 1.1.9: 左端。画面の左端が地図の左端（余白の分も含む）を越えないように */
+        int pos = r * 16 / rate;
+        if (pos < e) r = e * rate / 16;
+        return r;
+    }
     int maxpos = g_edgePx > 0 ? g_edgePx - (int)sw : W * 32 - (int)sw - e;
     if (maxpos < 0 && g_edgePx <= 0) return r;   /* 地図が画面より狭いときは、止める線を指定した地図（g_edgePx）だけ止める */
     int pos = r * 16 / rate;
@@ -4118,6 +4154,8 @@ static void hook_LoadMI(void *field, unsigned char *data, int off)
                                   (g_curMap == 1913 && W == 31 && H == 26) || (g_curMap == 1912 && W == 14 && H == 23)));
         /* 1.1.7: 1912（幅14、画面より狭い）は、右端（岩 (13,13) の右側）が画面の右端を越えないように止める */
         if (off == 0) g_edgePx = (g_edgeR && g_curMap == 1912) ? 14 * 32 : 0;
+        /* 1.1.9: 忍者編CD 1107（34x33）は左端が建物の途中で切れているので、画面の左端を地図の左端で止める */
+        if (off == 0) g_edgeL = (game && RD(int, game, G_CHAPTER) == 9 && g_curMap == 1107 && W == 34 && H == 33);
     }
 }
 
