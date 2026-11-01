@@ -44,8 +44,9 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.9-pre2"
+#define FFLMOD_VERSION "1.1.9-pre3"
 static int g_curMap = -1;
+static unsigned long long g_chainMask;   /* 1.1.9-pre3: 忍者編CDの鎖のキャラの枠（0〜63）。地図が変わったら消す */
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
 /* libjniproxy.so (ffl_gp 1.2.0, arm64-v8a) 内の位置。基準は KeyState のシンボル。
@@ -3202,8 +3203,9 @@ static void hook_LoadEv(void *field, unsigned char *data, int off, void *hdrs, v
             }
         }
         /* 1.1.9: 忍者編CD 1104（屋内）の鎖（絵100、登り降りの仕掛けがない）を消す
-           1.1.9-pre2: 1114 の鎖は5マス下げるので、絨毯（6〜13行）にかかる段（元の y 6・7）を消す */
-        if (cnt == 0 && be16(h + 0x2b) == 100 && (g_curMap == 1104 || (g_curMap == 1114 && h[2] == 6 && h[3] >= 6))) {
+           1.1.9-pre2: 1114 の鎖は5マス下げるので、絨毯（6〜13行）にかかる段（元の y 6・7）を消す
+           1.1.9-pre3: 縦穴の手前の縁より下に出る段も消す（元の y 4 以上。残る一番下の輪は縁に隠れる） */
+        if (cnt == 0 && be16(h + 0x2b) == 100 && (g_curMap == 1104 || (g_curMap == 1114 && h[2] == 6 && h[3] >= 4))) {
             void *game = game_inst();
             if (game && RD(int, game, G_CHAPTER) == 9) { h[0x2b] = 0; h[0x2c] = 0; }
         }
@@ -3439,6 +3441,7 @@ static void orochi_apply(int ninja)
         e[0x08] = 60;                         /* Lv */
         *(int *)(e + 0x0c) = 32000;           /* HP */
         e[0x1a] = 11;                         /* 攻撃の倍率 */
+        e[0x24] = 90;                         /* 魔力（1.1.9-pre3、110→90） */
     }
     g_orState = ninja;
     LOGI("orochi: %s", ninja ? "ninja chapter values" : "original values");
@@ -3536,6 +3539,7 @@ static LoadMapFn g_origLoadMap;
 static void hook_LoadMap(void *field, int map, int layer, int x, int y, int dir, int resume)
 {
     g_curMap = map;
+    g_chainMask = 0;   /* 1.1.9-pre3: 共通イベントの読み込みでは消さないよう、地図を読むときに消す */
     g_origLoadMap(field, map, layer, x, y, dir, resume);
     slow_magic_apply();
 }
@@ -3920,7 +3924,7 @@ static IedcFn g_origIEDC;
    スクショで測ったずれを、描く位置（+0x54 画素x・+0x58 画素y）で直す（マップ、イベントの列 x、足す画素 x・y）
    1.1.9-pre2: 1103・1112・1115 の下の鎖は1マス下、1114 は5マス下（ユーザー） */
 static const short nj_chain[6][4] = { { 1103, 8, -16, 32 }, { 1103, 18, -16, 32 }, { 1112, 12, -16, 32 },
-                                      { 1114, 6, 16, 160 }, { 1115, 7, 32, 0 }, { 1115, 8, 16, 32 } };
+                                      { 1114, 6, 16, 160 }, { 1115, 7, 32, 32 }, { 1115, 8, 16, 32 } };
 static void *g_fieldp;   /* 1.1.9-pre2: 直近の FieldClass（hook_IndexSort で使う） */
 static void hook_IEDC(void *field, unsigned char *h)
 {
@@ -3932,8 +3936,12 @@ static void hook_IEDC(void *field, unsigned char *h)
         if (!game || RD(int, game, G_CHAPTER) != 9) return;
         int dx = 0, dy = 0, hit = 0;
         for (int i = 0; i < 6; i++) if (nj_chain[i][0] == g_curMap && nj_chain[i][1] == h[2]) { dx = nj_chain[i][2]; dy = nj_chain[i][3]; hit = 1; }
-        if (!hit) return;
         int id = be16(h);
+        {   /* 1.1.9-pre3: 忍者編CDの鎖はすべて、並べ順でキャラより先にする（hook_ISort） */
+            unsigned char *cc = (unsigned char *)field + 0xc68;
+            for (int j = 0; j < 64; j++, cc += 0xc8) if (*(int *)cc == id) { g_chainMask |= 1ULL << j; break; }
+        }
+        if (!hit) return;
         unsigned char *c = (unsigned char *)field + 0xc68;
         for (int j = 0; j < 64; j++, c += 0xc8) {
             if (*(int *)c != id) continue;
@@ -4131,7 +4139,7 @@ typedef void (*ISortFn)(void *game, int *keys, int n, int *idx, int m, int asc);
 static ISortFn g_origISort;
 static void hook_ISort(void *game, int *keys, int n, int *idx, int m, int asc)
 {
-    if (g_curMap == 1103 && g_fieldp && keys && idx && n > 0 && n <= 0x144) {
+    if (g_chainMask && g_curMap >= 1100 && g_curMap <= 1115 && g_fieldp && keys && idx && n > 0 && n <= 0x144) {
         void *gm = game_inst();
         if (gm && RD(int, gm, G_CHAPTER) == 9) {
             for (int k = 0; k < n; k++) {
@@ -4139,8 +4147,7 @@ static void hook_ISort(void *game, int *keys, int n, int *idx, int m, int asc)
                 if (v < 0 || (v & 0xff000000) != 0x1000000) continue;
                 int j = v & 0xffffff;
                 if (j >= 64) continue;
-                int id = *(int *)((unsigned char *)g_fieldp + 0xc68 + j * 0xc8);
-                if (id >= 9 && id <= 24) keys[k] -= 0x1000;
+                if (g_chainMask >> j & 1) keys[k] -= 0x1000;
             }
         }
     }
@@ -4236,7 +4243,8 @@ static void hook_LoadMI(void *field, unsigned char *data, int off)
         if (off == 0) g_edgePx = (g_edgeR && g_curMap == 1912) ? 14 * 32 : 0;
         /* 1.1.9: 忍者編CD 1107（34x33）・1111（19x24）は左端が建物の途中で切れているので、画面の左端を地図の左端で止める */
         if (off == 0) g_edgeL = (game && RD(int, game, G_CHAPTER) == 9 &&
-                                 ((g_curMap == 1107 && W == 34 && H == 33) || (g_curMap == 1111 && W == 19 && H == 24)));
+                                 ((g_curMap == 1107 && W == 34 && H == 33) || (g_curMap == 1111 && W == 19 && H == 24) ||
+                                  (g_curMap == 1112 && W == 15 && H == 39)));   /* 1.1.9-pre3: 1112 も */
     }
 }
 
