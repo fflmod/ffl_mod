@@ -1525,8 +1525,13 @@ static void add_arrow_touch(void *mc)
     if (i + 2 < 32) *(int *)(t + (i + 2) * 0x18) = 0;
 }
 
+static int g_boostPage;             /* 1 = コンフィグの4ページ目を出している（ゲームのページは 2） */
 static void hook_RW(void *mc, int a, int b)
 {
+    if (g_boostPage) {   /* 1〜3 のタブを押したとき、ゲームの ConfigFunc がここを呼ぶ。決定の番号は ResetWidget の中で消えるので、その前に見る */
+        void *w = RDP(mc, 0xc20);
+        if (w && RD(int, w, 0x40) == 1) { int id = RD(int, w, 0x44); if (id >= 0x18d && id <= 0x18f) g_boostPage = 0; }
+    }
     g_origRW(mc, a, b);
     void *game = game_inst();
     if (game && arrows_on(mc, game)) add_arrow_touch(mc);
@@ -5891,7 +5896,6 @@ static BtnCtorFn p_BtnCtor;
 static WItemFn p_WAddItem, p_WRemoveItem;
 static SetUMsgFn p_SetUMsg;
 static DrawLDFn p_DrawLD;
-static int g_boostPage;             /* 1 = 4ページ目を出している（ゲームのページは 2） */
 static const char *const k_boostOpt[7] = { "0", "0.5", "1", "1.5", "2", "3", "4" };
 static const char *const k_boostRowU8[3] = { "獲得経験値", "獲得ギル", "獲得AP" };
 static const char *const k_boostRowSJ[3] = { "\x8a\x6c\x93\xbe\x8c\x6f\x8c\xb1\x92\x6c", "\x8a\x6c\x93\xbe\x83\x4d\x83\x8b", "\x8a\x6c\x93\xbe" "AP" };
@@ -5921,6 +5925,13 @@ static void boost_set_sel(void *b, int sel)
     *(int *)((u8 *)b + 0x74) = sel ? -1 : (int)0x808080ffU;
 }
 
+/* 行（ゲームの 0x3f8550 付近と同じ作り）: 左の見出しの部品（種類7）と、x+170 から右の枠の部品（種類7、番号 -1、文字なし）の2つ。
+   見出しは [0x80]=0x41c0000000000011（左寄せ・字の位置）、[0x70]=14、[0xb7]=0。[0xb4]=1 の行が明るくなり、説明もその行のものを出す */
+static void boost_row_hl(void *w, int arow)
+{
+    for (int r = 0; r < 3; r++) { u8 *row = (u8 *)p_WGetItem(w, BOOST_ROW + r); if (row) row[0xb4] = (u8)(r == arow); }
+}
+
 /* InitMenuItemCtrl(2) のあと。タブ4はどのページにも足す。4ページ目なら3ページ目の中身を外して入れ替える */
 static void boost_build(void *mc)
 {
@@ -5936,10 +5947,6 @@ static void boost_build(void *mc)
     boost_set_sel(tab4, g_boostPage);
     if (!g_boostPage) return;
     boost_set_sel(tab3, 0);
-    /* 行の見た目は3ページ目の行（0x1af）にそろえる */
-    u8 *tmpl = (u8 *)p_WGetItem(w, 0x1af);
-    u8 t18[4] = { 0 }, t70[4] = { 0 }, t80[8] = { 0 }; u8 tb4 = 1, tb7 = 0;
-    if (tmpl) { for (int i = 0; i < 4; i++) { t18[i] = tmpl[0x18 + i]; t70[i] = tmpl[0x70 + i]; } for (int i = 0; i < 8; i++) t80[i] = tmpl[0x80 + i]; tb4 = tmpl[0xb4]; tb7 = tmpl[0xb7]; }
     void *rm[96]; int nrm = 0;
     for (u8 *node = *(u8 **)((u8 *)w + 0x20); node && nrm < 96; node = *(u8 **)node) {
         u8 *it = *(u8 **)(node + 0x10);
@@ -5950,10 +5957,23 @@ static void boost_build(void *mc)
     for (int i = 0; i < nrm; i++) p_WRemoveItem(w, rm[i]);
     int sj = g_sjis == 1;
     for (int r = 0; r < 3; r++) {
-        u8 *row = (u8 *)boost_button(w, 7, BOOST_ROW + r, sj ? k_boostRowSJ[r] : k_boostRowU8[r], 2, 74 + 65 * r, 0x27c, 0x41);
-        if (row && tmpl) { for (int i = 0; i < 4; i++) { row[0x18 + i] = t18[i]; row[0x70 + i] = t70[i]; } for (int i = 0; i < 8; i++) row[0x80 + i] = t80[i]; row[0xb4] = tb4; row[0xb7] = tb7; }
+        int ry = 74 + 65 * r;
+        u8 *row = (u8 *)boost_button(w, 7, BOOST_ROW + r, sj ? k_boostRowSJ[r] : k_boostRowU8[r], 2, ry, 636, 65);
+        u8 *seg = (u8 *)p_Znwm(0xc0);
+        if (seg) {
+            p_BtnCtor(seg, 7, BOOST_ROW + r, -1, 0, 2 + 0xaa, ry, 468 - 2, 65);
+            seg[0xc] = 0; seg[0x14] = 0;
+            *(int *)(seg + 8) = -1;
+            p_WAddItem(w, seg);
+        }
+        if (row) {
+            row[0xb7] = 0;
+            *(unsigned long *)(row + 0x80) = 0x41c0000000000011UL;
+            *(int *)(row + 0x70) = 14;
+            row[0xb4] = (u8)(r == 0);
+        }
         for (int k = 0; k < 7; k++) {
-            u8 *b = (u8 *)boost_button(w, 6, BOOST_OPT + r * 8 + k, k_boostOpt[k], 222 + 53 * k, 82 + 65 * r, 46, 49);
+            u8 *b = (u8 *)boost_button(w, 6, BOOST_OPT + r * 8 + k, k_boostOpt[k], 222 + 53 * k, ry + 8, 46, 49);
             if (!b) continue;
             b[0x13] = 1;
             *(int *)(b + 0x70) = 14;
@@ -5976,15 +5996,11 @@ static void hook_ConfigF(void *mc)
         if (g_origRW) hook_RW(mc, 1, 1); else if (p_ResetWidget) p_ResetWidget(mc, 1, 1);
         return;
     }
-    if (id >= 0x18d && id <= 0x18f && g_boostPage) {   /* 1〜3 のタブ。ゲームが作り直したあとなので、4ページ目をやめて作り直す */
-        g_boostPage = 0;
-        if (g_origRW) hook_RW(mc, 1, 1); else if (p_ResetWidget) p_ResetWidget(mc, 1, 1);
-        return;
-    }
     if (g_boostPage && id >= BOOST_OPT && id < BOOST_OPT + 24 && (id - BOOST_OPT) % 8 < 7) {
         int r = (id - BOOST_OPT) / 8, k = (id - BOOST_OPT) % 8;
         if (g_boost[r] != k) { g_boost[r] = k; boost_save(); }
         for (int j = 0; j < 7; j++) boost_set_sel(p_WGetItem(w, BOOST_OPT + r * 8 + j), j == k);
+        boost_row_hl(w, r);
         LOGI("boost: row %d -> %d%%", r, k_boostRate[k]);
     }
 }
@@ -5994,24 +6010,25 @@ static void hook_DrawConf(void *mc, void *g)
     if (!g_boostPage || RD(int, mc, 0x28) != 2) { g_origDrawConf(mc, g); return; }
     void *game = game_inst();
     void *w = RDP(mc, 0xc20);
-    int sj = g_sjis == 1, arow = -1;
+    int sj = g_sjis == 1, hrow = -1;
     if (w) {
         u8 *act = *(u8 **)((u8 *)w + 0x8);
         if (act) {
-            int id = *(int *)(act + 8);
+            int id = *(int *)(act + 8), arow = -1;
             if (id >= BOOST_ROW && id < BOOST_ROW + 3) arow = id - BOOST_ROW;
             if (id >= BOOST_OPT && id < BOOST_OPT + 24) arow = (id - BOOST_OPT) / 8;
+            if (arow >= 0) boost_row_hl(w, arow);
         }
-        if (arow >= 0) for (int r = 0; r < 3; r++) { u8 *row = (u8 *)p_WGetItem(w, BOOST_ROW + r); if (row) row[0xb4] = (u8)(r == arow); }
+        for (int r = 0; r < 3; r++) { u8 *row = (u8 *)p_WGetItem(w, BOOST_ROW + r); if (row && row[0xb4]) hrow = r; }
     }
     char **tbl = game ? *(char ***)((u8 *)game + G_SYSMSG) : 0;
     char *save = tbl ? tbl[519] : 0;
     if (tbl) tbl[519] = (char *)(sj ? k_boostTitleSJ : k_boostTitleU8);
     g_origDrawConf(mc, g);
     if (tbl) tbl[519] = save;
-    if (arow >= 0 && game && p_SetUMsg && p_DrawLD && p_SetColor) {
+    if (hrow >= 0 && game && p_SetUMsg && p_DrawLD && p_SetColor) {
         p_SetColor(game, -1);
-        p_SetUMsg(game, 0, sj ? k_boostHelpSJ[arow] : k_boostHelpU8[arow]);
+        p_SetUMsg(game, 0, sj ? k_boostHelpSJ[hrow] : k_boostHelpU8[hrow]);
         p_DrawLD(game, 0x1a1, 0, 0);
     }
 }
