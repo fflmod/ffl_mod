@@ -3962,10 +3962,13 @@ static const struct { short ch, map, ev, x, y, dy; } circ_fix[] = {
 };
 /* 1.1.9: 忍者編CDの鎖（絵100）。登り降りする列（命令0x7a のイベントの列）と絵がずれて見えるので、描く位置（+0x54 x・+0x58 y）を直す
    （マップ、イベント番号の範囲、マス x、足す画素 x・y）。1.1.9-pre2〜4: 下げ幅はユーザーのスクショで決めた
-   鎖はすべて、並べ順でキャラより先にする（hook_ISort）。dx・dy が 0 の行は並べ順だけ */
-static const struct { short map, lo, hi, x, dx, dy; } nj_chain[] = {
-    { 1103, 9, 16, 8, -16, 32 }, { 1103, 17, 24, 18, -16, 32 }, { 1109, 12, 26, 9, 0, 0 }, { 1112, 9, 27, 12, -16, 64 },
-    { 1113, 12, 26, 28, 0, 0 }, { 1114, 2, 8, 6, 16, 160 }, { 1115, 7, 19, 7, 32, 32 }, { 1115, 24, 33, 8, 16, 32 },
+   鎖はすべて、並べ順でキャラより先にする（hook_ISort）。dx・dy が 0 の行は並べ順だけ
+   1.1.9-pre8: y はマップのイベントの元のマス（lo の鎖が y、以下1つずつ下）。ゲームは描く位置がマス1つ分ずれるとマスの位置も動かすので、
+   「描く位置が元のマスの真ん中なら足す」だけだと、32 の倍数を足す鎖は毎フレーム1マスずつ落ちていった（pre5〜7）。元のマスにいるときだけ足す */
+static const struct { short map, lo, hi, x, y, dx, dy; } nj_chain[] = {
+    { 1103, 9, 16, 8, 10, -16, 32 }, { 1103, 17, 24, 18, 10, -16, 32 }, { 1109, 12, 26, 9, 14, 0, 0 },
+    { 1112, 9, 21, 12, 12, -16, 64 }, { 1112, 26, 27, 12, 25, -16, 64 },
+    { 1113, 12, 26, 28, 0, 0, 0 }, { 1114, 2, 8, 6, 1, 16, 160 }, { 1115, 7, 19, 7, 1, 32, 32 }, { 1115, 24, 33, 8, 20, 16, 32 },
 };
 static void *g_fieldp;   /* 1.1.9-pre2: 直近の FieldClass（hook_ISort で使う。IEDC と GetScrollPosX で覚える） */
 /* 1.1.9-pre5: 位置の直しは、キャラを作るとき（InitEventDataOfChara）だけでなく毎フレーム確かめる。
@@ -3988,10 +3991,13 @@ static unsigned long long chara_fix(void *field)
         int *px = (int *)(c + 0x54), *py = (int *)(c + 0x58);
         if (nj) {
             for (unsigned i = 0; i < sizeof(nj_chain) / sizeof(nj_chain[0]); i++) {
-                if (nj_chain[i].map != map || id < nj_chain[i].lo || id > nj_chain[i].hi || tx != nj_chain[i].x) continue;
+                if (nj_chain[i].map != map || id < nj_chain[i].lo || id > nj_chain[i].hi) continue;
                 mask |= 1ULL << j;
-                if (*px == tx * 32 + 16 && nj_chain[i].dx) *px += nj_chain[i].dx;
-                if (*py == ty * 32 + 16 && nj_chain[i].dy) *py += nj_chain[i].dy;
+                int x0 = nj_chain[i].x, y0 = nj_chain[i].y + (id - nj_chain[i].lo);
+                if (tx == x0 && ty == y0) {
+                    if (*px == x0 * 32 + 16 && nj_chain[i].dx) *px += nj_chain[i].dx;
+                    if (*py == y0 * 32 + 16 && nj_chain[i].dy) *py += nj_chain[i].dy;
+                }
                 break;
             }
         }
