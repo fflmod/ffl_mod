@@ -1725,6 +1725,31 @@ static int hook_AddJp(void *game, int member, int jp)
     }
     return g_origAddJp(game, member, jp);
 }
+/* 1.1.10: 同じ場面のセリフ「〇〇たちは ６ＪＰ（ジョブポイント）を 手に入れた！」も８にする。
+   フィールドのメッセージの表（FieldClass+0x380、char* の配列、msg%d.dat の12個ごとの組の番号）の 22（光）と 26（闇）。
+   黄昏の章（章10）と章13 にだけある。読み込んだ文字列の数字を1文字だけ書き換える（UTF-8 ６=EF BC 96、Shift_JIS ６=82 55） */
+static void jp_text_fix(void *field)
+{
+    void *game = game_inst();
+    if (!game || !field) return;
+    int ch = RD(int, game, 0x19fe0);
+    if (ch != 10 && ch != 13) return;
+    char **list = *(char ***)((u8 *)field + 0x380);
+    if (!list) return;
+    static const int idx[2] = { 22, 26 };
+    for (int k = 0; k < 2; k++) {
+        u8 *s = (u8 *)list[idx[k]];
+        if (!s) continue;
+        for (int i = 0; i < 48 && s[i]; i++) {
+            if (s[i] == 0xef && s[i + 1] == 0xbc && s[i + 2] == 0x96 && s[i + 3] == 0xef && s[i + 4] == 0xbc && s[i + 5] == 0xaa) {
+                s[i + 2] = 0x98; LOGI("jp text %d fixed (utf8)", idx[k]); break;
+            }
+            if (s[i] == 0x82 && s[i + 1] == 0x55 && s[i + 2] == 0x82 && s[i + 3] == 0x69) {
+                s[i + 1] = 0x57; LOGI("jp text %d fixed (sjis)", idx[k]); break;
+            }
+        }
+    }
+}
 
 /* ---------- ゲストの強化（v2.21） ----------
    光と闇の戦士8人が1つのパーティにそろったとき（終章 mpk11_2 の「では、行くか」で闇の4人が加わる場面。
@@ -1772,6 +1797,10 @@ static const GuestUp k_guestUp[] = {
     /* 仮面の男: メテオ アルテマ / 白魔法ＬＶ６ バーサク リジェネ ヘイスト / エン系8つ（ジョブの一覧は黄昏の章からのジョブ19）。
        v4.02 までの印の書き換え（黒魔法ＬＶ６→ＬＶ８）は元に戻す */
     { 18, {47, 48, 16, 17, 18, 243, 244, 245, 246, 247, 248, 249, 250}, {34}, {36}, 0 },
+    /* 1.1.10: ホーリーとメテオの統合。黄昏の章で光の4人（0〜3）はホーリー（23）と専用の白魔法ＬＶ８（108）、
+       闇の4人（4〜7）はメテオ（47）と専用の黒魔法ＬＶ８（109）を覚える（命令 0x0e・0x0d の1人ずつの形）。8人がそろったら反対側の分も覚えさせる */
+    { 0, {47}, {109}, {0}, 0 }, { 1, {47}, {109}, {0}, 0 }, { 2, {47}, {109}, {0}, 0 }, { 3, {47}, {109}, {0}, 0 },
+    { 4, {23}, {108}, {0}, 0 }, { 5, {23}, {108}, {0}, 0 }, { 6, {23}, {108}, {0}, 0 }, { 7, {23}, {108}, {0}, 0 },
 };
 #define ALGY 13
 
@@ -4958,6 +4987,7 @@ static long hook_AppRun(void *self, void *g)
     cursor_tick();
     dash_restore();                                /* イベントなどほかの処理が動かす前にも戻しておく */
     if (g_installed && (g_frame % 30) == 0) guest_tick();
+    if (g_installed && (g_frame % 30) == 10) jp_text_fix(g_fieldp);
     if (g_installed && (g_frame % 30) == 15) styx_tick();
     if (g_installed && (g_frame % 30) == 20) { void *gm = game_inst(); if (gm) alarm_item(gm); }
     if (g_installed) alarm_frame();
