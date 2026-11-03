@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.12-pre1"
+#define FFLMOD_VERSION "1.1.12"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -1709,7 +1709,7 @@ static void hook_Form(void *mc)
 
 /* ---------- ジョブポイントの調整（v2.20b） ----------
    ジョブが17個になり、物語で配られるジョブポイントの合計では端数が出る。
-   第4章で導師（光）・魔人（闇）の力を受け継ぐ場面の「1人6ポイント」を8ポイントにする。
+   第4章で導師（光）・魔人（闇）の力を受け継ぐ場面の「1人6ポイント」を8ポイントにする（1.1.12 から 7）。
    6ポイントの配布は物語中この2回だけ（スクリプトの命令 0x73 の1人ずつ配る形）。 */
 #define OFF_ADDJP_FUNC 0x3e7024UL     /* GameClass::AddJp(int member, int jp) */
 #define OFF_ADDJP_GOT  0x45fc48UL
@@ -1721,11 +1721,11 @@ static int hook_AddJp(void *game, int member, int jp)
     uintptr_t ra;
     __asm__ volatile("mov %0, x30" : "=r"(ra));
     if (ra - g_base == RA_SCRIPT_JP1 && jp == 6) {
-        jp = 8;
+        jp = 7;   /* 1.1.12: 8 では合計が3の倍数にならないので 7（ユーザー） */
     }
     return g_origAddJp(game, member, jp);
 }
-/* 1.1.10: 同じ場面のセリフ「〇〇たちは ６ＪＰ（ジョブポイント）を 手に入れた！」も８にする。
+/* 1.1.10: 同じ場面のセリフ「〇〇たちは ６ＪＰ（ジョブポイント）を 手に入れた！」も８にする（1.1.12 から７）。
    フィールドのメッセージの表（FieldClass+0x380、char* の配列、msg%d.dat の12個ごとの組の番号）の 22（光）と 26（闇）。
    黄昏の章（章10）と章13 にだけある。読み込んだ文字列の数字を1文字だけ書き換える（UTF-8 ６=EF BC 96、Shift_JIS ６=82 55） */
 static void jp_text_fix(void *field)
@@ -1742,10 +1742,10 @@ static void jp_text_fix(void *field)
         if (!s) continue;
         for (int i = 0; i < 48 && s[i]; i++) {
             if (s[i] == 0xef && s[i + 1] == 0xbc && s[i + 2] == 0x96 && s[i + 3] == 0xef && s[i + 4] == 0xbc && s[i + 5] == 0xaa) {
-                s[i + 2] = 0x98; LOGI("jp text %d fixed (utf8)", idx[k]); break;
+                s[i + 2] = 0x97; LOGI("jp text %d fixed (utf8)", idx[k]); break;
             }
             if (s[i] == 0x82 && s[i + 1] == 0x55 && s[i + 2] == 0x82 && s[i + 3] == 0x69) {
-                s[i + 1] = 0x57; LOGI("jp text %d fixed (sjis)", idx[k]); break;
+                s[i + 1] = 0x56; LOGI("jp text %d fixed (sjis)", idx[k]); break;
             }
         }
     }
