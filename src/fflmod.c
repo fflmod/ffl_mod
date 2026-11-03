@@ -5636,8 +5636,9 @@ static void memories_cost_tick(void *game)
 #define DASH_H 40
 #define DASH_SHIFT_OFF  1.0f          /* 文字の位置の補正（ゲームの画素）。1.1.10: BlueStacks の画面写真を画素で測ると、ゲームのボタン（地図・乗る・メニュー）の
                                          文字は枠の真ん中より 2.5〜4 画面画素左（ゲーム自体の描き方）、ダッシュは OFF 6・ON 5 左だった（1 ゲーム画素＝約 2.68 画面画素）。
-                                         ゲームのボタンとそろうよう、OFF は 1、ON は 0.75 右へ。半角英字を広く測る分のずれ */
-#define DASH_SHIFT_ON   0.75f
+                                         ゲームのボタンとそろうよう、OFF は 1、ON は 0.75 右へ。半角英字を広く測る分のずれ
+                                         1.1.11: 1.1.10 の写真で OFF は 6→4 左に動いたが、ON は 5 のまま（文字はゲームの画素の整数に置かれ、0.75 は 0 になる）。ON も 1 */
+#define DASH_SHIFT_ON   1.0f
 #define DASH_STILL      6             /* 止まってから出すまでのフレーム */
 #define DASH_FILE "/storage/emulated/0/Android/data/com.square_enix.android_googleplay.ffl_gp/files/fflmod_dash.txt"
 typedef void (*SyncSBFn)(void *field);
