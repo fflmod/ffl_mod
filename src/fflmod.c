@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.11"
+#define FFLMOD_VERSION "1.1.12-pre1"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -4933,6 +4933,16 @@ static int hook_BufLoad(void *bc)
     for (unsigned i = 0; i < sizeof(bsc_81); i++) nd[len + sizeof(bsc_80) + i] = bsc_81[i];
     be32w(nd + BSC_S1 + 4 * 80, (unsigned)(len - BSC_S1));
     be32w(nd + BSC_S1 + 4 * 81, (unsigned)(len + sizeof(bsc_80) - BSC_S1));
+    /* 1.1.12: ザ・サボテンダー（区分0 の 570）が逃げないようにする。毎ターン 0〜100 の乱数を変数 0x20 に入れ、
+       「09 01 03 00000020 03 00 0000001e」（変数 0x20 <= 30）なら「とうそう」して逃げる。比べ方 03 を 06（どれでもない＝成り立たない）にして
+       逃げる部分を飛ばす。はりせんぼんと「走り回っている！」はそのまま */
+    {
+        static const u8 k_escCmp[15] = { 0x09, 0x01, 0x03, 0, 0, 0, 0x20, 0x03, 0x00, 0, 0, 0, 0x1e, 0x00, 0x2a };
+        int x = (int)be32(nd + 0x10 + 4 * 570);
+        u8 *p = nd + 0x10 + x + 32;
+        if (x > 0 && 0x10 + x + 32 + 15 < len && mem_eq(p, k_escCmp, 15)) { p[7] = 0x06; LOGI("bsc: the cactuar never escapes"); }
+        else LOGE("bsc: the cactuar script differs, not patched");
+    }
     g_bscOrig = d; g_bscOrigLen = len;
     *(u8 **)((uintptr_t)bc + 0x10) = nd;
     *(volatile int *)((uintptr_t)bc + 0x18) = nl;
