@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.12"
+#define FFLMOD_VERSION "1.1.13"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -2014,6 +2014,51 @@ static void hook_MovePl(void *field)
    ほどいたデータはテクスチャが保持し、作り直し（ReCreate）にも同じものが使われる */
 #include "recolor_tab.h"
 static const char *g_recolorPal;
+static int g_recolorModel, g_recolorChara, g_recolorSub;
+
+/* 1.1.13: 追加ジョブの絵の描き替え（髪と目を本人のものに）。sprite_patch.bin（tools/gen_sprite_patch.py で作る）を埋め込み、
+   色替えの絵をほどいた直後に、空いている番号へ色を足して点の番号を書き換える。
+   元の絵の点の番号の FNV-1a が作ったときと違えば書き換えない（色替えのまま） */
+__asm__(".section .rodata\n.balign 4\n.global fflmod_sprite_patch\n.hidden fflmod_sprite_patch\nfflmod_sprite_patch:\n"
+        ".incbin \"sprite_patch.bin\"\n.global fflmod_sprite_patch_end\n.hidden fflmod_sprite_patch_end\nfflmod_sprite_patch_end:\n.text\n");
+extern const u8 fflmod_sprite_patch[], fflmod_sprite_patch_end[];
+static unsigned sp_rd32(const u8 *p) { return p[0] | p[1] << 8 | p[2] << 16 | (unsigned)p[3] << 24; }
+static unsigned sp_rd16(const u8 *p) { return p[0] | p[1] << 8; }
+static void sprite_patch(u8 *r, int model, int chara, int sub)
+{
+    const u8 *b = fflmod_sprite_patch, *e = fflmod_sprite_patch_end;
+    if (e - b < 8 || b[0] != 'F' || b[1] != 'S' || b[2] != 'P' || b[3] != '1') return;
+    unsigned n = sp_rd32(b + 4);
+    for (unsigned i = 0; i < n; i++) {
+        const u8 *t = b + 8 + i * 20;
+        if (t + 20 > e) return;
+        if (t[0] != model || t[1] != chara || t[2] != sub) continue;
+        unsigned na = t[3], w = sp_rd16(t + 4), h = sp_rd16(t + 6), hash = sp_rd32(t + 8);
+        unsigned off = sp_rd32(t + 12), len = sp_rd32(t + 16);
+        if (off > (unsigned)(e - b) || len > (unsigned)(e - b) - off) return;
+        u8 *idx = r + 4 + 1024;
+        unsigned hh = 0x811c9dc5u;
+        for (unsigned k = 0; k < w * h; k++) hh = (hh ^ idx[k]) * 0x01000193u;
+        static int nl;
+        if (hh != hash) {
+            if (nl++ < 40) LOGE("sprite: job %d chara %d sub %d base differs (%08x), not patched", model, chara, sub, hh);
+            return;
+        }
+        const u8 *d = b + off, *de = d + len;
+        for (unsigned k = 0; k < na && d + 5 <= de; k++, d += 5)
+            for (int c = 0; c < 4; c++) r[4 + d[0] * 4 + c] = d[1 + c];
+        unsigned px = 0;
+        while (d + 6 <= de) {
+            unsigned pos = sp_rd32(d), ln = sp_rd16(d + 4);
+            d += 6;
+            if (d + ln > de || pos > w * h || ln > w * h - pos) break;
+            for (unsigned k = 0; k < ln; k++) idx[pos + k] = d[k];
+            d += ln; px += ln;
+        }
+        if (nl++ < 40) LOGI("sprite: job %d chara %d sub %d patched (%u colours, %u px)", model, chara, sub, na, px);
+        return;
+    }
+}
 
 /* v3.40t: スティクス（fldchr120_0）の戦闘の絵。
    ・本体（256×512）：パレットが fldchr120_0 と同じなら、空の 150〜299 行目に B1〜B12 を書く（元は何も描かれていない）
@@ -2046,6 +2091,7 @@ static int hook_LCI(void *game, int slot, int model, int chara, int sub)
     for (unsigned i = 0; i < sizeof(k_recolor) / sizeof(k_recolor[0]); i++) {
         if (k_recolor[i].model == model && k_recolor[i].chara == chara) {
             g_recolorPal = k_recolor[i].pal;
+            g_recolorModel = model; g_recolorChara = chara; g_recolorSub = sub & 1;
             int r = g_origLCI(game, slot, model, k_recolor[i].base, sub);
             g_recolorPal = 0;
             return r;
@@ -2095,6 +2141,7 @@ static u8 *hook_LICP(void *ba, int *fmt)
     } else if (r && pal) {
         g_recolorPal = 0;
         for (int i = 0; i < 1024; i++) r[4 + i] = (u8)pal[i];
+        sprite_patch(r, g_recolorModel, g_recolorChara, g_recolorSub);
     } else if (r) {
         fix_jump_tile(r);
     }
