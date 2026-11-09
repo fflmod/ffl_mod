@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.14"
+#define FFLMOD_VERSION "1.1.15"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -5013,6 +5013,25 @@ static int hook_BufLoad(void *bc)
         u8 *p = nd + 0x10 + x + 32;
         if (x > 0 && 0x10 + x + 32 + 15 < len && mem_eq(p, k_escCmp, 15)) { p[7] = 0x06; LOGI("bsc: the cactuar never escapes"); }
         else LOGE("bsc: the cactuar script differs, not patched");
+    }
+    /* 1.1.15: 次元城のムーバー（区分0 の 625）が逃げないようにする。行動のたびに、行動回数が 1/2/3/4/5 回以上なら
+       乱数 0〜100 が 10/20/30/50/70 未満のとき、また仲間（対象 5）の数が 3 でないとき、+0x12a の「とうそう」へ飛ぶ。
+       この 6 つの比べ方を 06（成り立たない）にして、逃げずに攻撃の選び方へ進ませる */
+    {
+        static const u8 k_rnd[13] = { 0x09, 0x01, 0x05, 0, 0, 0, 0x64, 0x02, 0x00, 0, 0, 0, 0 };
+        static const u8 k_cnt[13] = { 0x09, 0x01, 0x06, 0, 0, 0, 0x65, 0x01, 0x00, 0, 0, 0, 0x03 };
+        static const u8 k_pct[5] = { 0x46, 0x32, 0x1e, 0x14, 0x0a };
+        static const unsigned short k_at[6] = { 0x23, 0x44, 0x65, 0x86, 0xa7, 0xbb };
+        static const u8 k_esc[4] = { 0x0c, 0x00, 0x2b, 0x00 };
+        int x = (int)be32(nd + 0x10 + 4 * 625), ok = x > 0 && 0x10 + x + 0x12a + 4 < len;
+        u8 *sc = nd + 0x10 + x;
+        for (int i = 0; ok && i < 6; i++) {
+            const u8 *q = sc + k_at[i];
+            ok = mem_eq(q, i < 5 ? k_rnd : k_cnt, i < 5 ? 12 : 13) && (i == 5 || q[12] == k_pct[i]) && q[13] == 0x00 && q[14] == 0x05 &&
+                 q[15] == 0x01 && k_at[i] + 16 + (int)(short)(q[16] << 8 | q[17]) == 0x12a;
+        }
+        if (ok && mem_eq(sc + 0x12a, k_esc, 4)) { for (int i = 0; i < 6; i++) sc[k_at[i] + 7] = 0x06; LOGI("bsc: the mover never escapes"); }
+        else LOGE("bsc: the mover script differs, not patched");
     }
     g_bscOrig = d; g_bscOrigLen = len;
     *(u8 **)((uintptr_t)bc + 0x10) = nd;
