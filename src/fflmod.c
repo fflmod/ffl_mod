@@ -44,7 +44,7 @@ static void plog(int prio, const char *fmt, ...) __attribute__((format(printf, 2
 #define PROT_WRITE 2
 
 /* 版。公開に向けて 1.0 の系統にそろえた（1.0-pre1・1.0-pre2 は開発時の v4.07 と同じ中身。1.0-pre3 から本当のワイド表示） */
-#define FFLMOD_VERSION "1.1.13"
+#define FFLMOD_VERSION "1.1.14"
 static int g_curMap = -1;
 static void slow_magic_apply(void);     /* v3.32t: LoadMap で読み込み中のマップ番号 */
 
@@ -2929,6 +2929,29 @@ static int patch_lottery(unsigned char *h, int cnt)
     return done;
 }
 
+/* 1.1.14: 挑戦者の館（章15）の入口（マップ200）で、アダマンタイト（イベント12、変数0x3f）と
+   モグコイン（イベント13、変数0x40）の個数を random(0..9) で 1/2/3 個に決める行を、すべて3個にする。
+   「map変数 = 1」「= 2」の行の値だけを3に変える（長さは同じ）。戻り値は書き換えた数、元が違えば -1 */
+static int challenger_three(unsigned char *h, int cnt)
+{
+    if (g_curMap != 200 || (h[1] != 12 && h[1] != 13) || h[0] != 0) return 0;
+    void *game = game_inst();
+    if (!game || RD(int, game, G_CHAPTER) != 15) return 0;
+    static const unsigned char head[6] = { 0x03, 0x0a, 0, 0, 1, 0 };
+    int var = h[1] == 12 ? 0x3f : 0x40, done = 0, three = 0;
+    unsigned char *q = h + 0x41;
+    for (int k = 0; k < cnt && k < 200; k++) {
+        unsigned char *L = q + 1;
+        if (q[0] == 0x11 && bytes_eq(L, head, 6) && L[6] == var && be32(L + 7) == 0 && be32(L + 11) == 0 && L[15] == 0) {
+            if (L[16] == 1 || L[16] == 2) { L[16] = 3; done++; }
+            else if (L[16] == 3) three++;
+        }
+        q += 1 + q[0];
+    }
+    if (done == 2 && three == 1) return done;
+    return (done == 0 && three == 3) ? 0 : -1;   /* 書き換え済みのデータなら何もしない */
+}
+
 static void moogle_face(unsigned char *h)
 {
     static const unsigned char face[12] = { 2, 1, 1, 1, 3, 2, 0, 0, 2, 0, 0, 0 };
@@ -3365,6 +3388,7 @@ static void hook_LoadEv(void *field, unsigned char *data, int off, void *hdrs, v
         if (cnt) {
             forest_lottery(h, cnt);
             patch_lottery(h, cnt);
+            if (challenger_three(h, cnt) < 0) LOGE("challenger: map 200 event %d differs", h[1]);
         }
         /* 暁の章のボスの宝箱 */
         if (cnt == DAWN_CHEST_ORIG_LINES && h[1] == 2 && be16(h + 0x2b) == 7 && nrep < 6
